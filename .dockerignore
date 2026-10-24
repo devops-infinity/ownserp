@@ -5,6 +5,8 @@ target
 *.pdf
 .env
 .env.*
+.cargo/credentials
+.cargo/credentials.toml
 *.pem
 *.key
 *.p12

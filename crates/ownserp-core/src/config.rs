@@ -82,14 +82,30 @@ impl Settings {
             .clone()
             .or_else(|| Some(default_config_dir().join("profile.toml")));
         let profile = match profile_path.as_deref() {
-            Some(path) if path.exists() => read_profile(path)?,
-            Some(path) if requested_profile.is_some() => {
-                return Err(Error::Config(format!(
-                    "profile {} does not exist; fix --profile or OWN_SERPER_PROFILE",
-                    path.display()
-                )));
+            Some(path) => {
+                let present = match path.try_exists() {
+                    Ok(found) => found,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => {
+                        return Err(Error::Config(format!(
+                            "cannot check profile {}: {error}",
+                            path.display()
+                        )));
+                    }
+                };
+                let present = present || std::fs::symlink_metadata(path).is_ok();
+                if present {
+                    read_profile(path)?
+                } else if requested_profile.is_some() {
+                    return Err(Error::Config(format!(
+                        "profile {} does not exist; fix --profile or OWN_SERPER_PROFILE",
+                        path.display()
+                    )));
+                } else {
+                    Profile::default()
+                }
             }
-            _ => Profile::default(),
+            None => Profile::default(),
         };
         if profile.version > 1 {
             let shown = profile_path
@@ -308,10 +324,45 @@ const fn profile_version() -> u32 {
     1
 }
 
+const MAX_PROFILE_BYTES: u64 = 64 * 1024;
+
 fn read_profile(path: &Path) -> Result<Profile> {
-    let raw = std::fs::read_to_string(path).map_err(|error| {
+    use std::io::Read as _;
+
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        Error::Config(format!(
+            "cannot inspect profile {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Config(format!(
+            "profile {} is not a regular file",
+            path.display()
+        )));
+    }
+    if metadata.len() > MAX_PROFILE_BYTES {
+        return Err(Error::Config(format!(
+            "profile {} is {} bytes, above the {MAX_PROFILE_BYTES} byte cap",
+            path.display(),
+            metadata.len()
+        )));
+    }
+    let file = std::fs::File::open(path).map_err(|error| {
         Error::Config(format!("cannot read profile {}: {error}", path.display()))
     })?;
+    let mut raw = String::new();
+    file.take(MAX_PROFILE_BYTES.saturating_add(1))
+        .read_to_string(&mut raw)
+        .map_err(|error| {
+            Error::Config(format!("cannot read profile {}: {error}", path.display()))
+        })?;
+    if raw.len() as u64 > MAX_PROFILE_BYTES {
+        return Err(Error::Config(format!(
+            "profile {} grew past the {MAX_PROFILE_BYTES} byte cap while it was read",
+            path.display()
+        )));
+    }
     toml::from_str::<Profile>(&raw)
         .map_err(|error| Error::Config(format!("profile {}: {error}", path.display())))
 }
@@ -625,6 +676,51 @@ mod tests {
         let rendered = format!("{settings:?}");
         assert!(!rendered.contains("super-secret-value"));
         assert!(rendered.contains("<set>"));
+    }
+
+    #[test]
+    fn a_profile_that_is_not_a_regular_file_is_refused() {
+        let dir = std::env::temp_dir().join(format!("ownserp-profile-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let error = Settings::load_with(
+            Overrides {
+                profile: Some(dir.clone()),
+                ledger_dir: Some(dir.join("ledger")),
+                cache_ttl_secs: Some(0),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("not a regular file"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_profile_is_followed() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("ownserp-profile-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let target = dir.join("real.toml");
+        std::fs::write(&target, "cache_ttl_secs = 5\n").expect("target");
+        let link = dir.join("profile.toml");
+        symlink(&target, &link).expect("link");
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let settings = Settings::load_with(
+            Overrides {
+                profile: Some(link),
+                ledger_dir: Some(dir.join("ledger")),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("a symlink to a regular profile is allowed");
+        assert_eq!(settings.cache_ttl_secs(), 5);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -32,6 +32,16 @@ run_check() {
 	say SUCCESS "$STEP"
 }
 
+SKIPPED=()
+skip_check() {
+	local name="$1" reason="$2"
+	if [[ "${OWN_SERPER_STRICT_GATE:-0}" == "1" ]]; then
+		die "$name was skipped ($reason) and OWN_SERPER_STRICT_GATE=1 needs every check to run"
+	fi
+	SKIPPED+=("$name")
+	warn "$reason"
+}
+
 SHELL_FILES=(tools/*.sh .githooks/pre-commit .githooks/pre-push)
 bash -n "${SHELL_FILES[@]}" || die "a shell script has a syntax error"
 say SUCCESS "shell syntax"
@@ -47,13 +57,13 @@ run_check "shellcheck" "fix the reported shell problem" shellcheck -x "${SHELL_F
 if command -v bats >/dev/null 2>&1; then
 	run_check "shell tests" "fix the failing shell test" bats tools/tests/cli.bats
 else
-	warn "bats is not installed, so the shell tests were skipped"
+	skip_check "shell tests" "bats is not installed, so the shell tests were skipped"
 fi
 run_check "shfmt" "run: shfmt -w tools" shfmt -d "${SHELL_FILES[@]}"
 if command -v node >/dev/null 2>&1; then
 	run_check "npm loader syntax" "fix the JavaScript error" node --check packages/npm/bin/ownserp.js
 else
-	warn "node is not installed, so the npm loader was not syntax checked"
+	skip_check "npm loader syntax" "node is not installed, so the npm loader was not syntax checked"
 fi
 run_check "formatting" "run: cargo fmt --all" cargo fmt --all -- --check
 run_check "check" "cargo check failed" cargo check --workspace --all-targets --all-features --locked --color=never
@@ -66,7 +76,7 @@ fi
 if rustup toolchain list 2>/dev/null | grep -q '^1\.89'; then
 	run_check "msrv" "the declared minimum Rust version does not build; fix the code or raise rust-version" cargo +1.89.0 check --workspace --all-targets --all-features --locked --color=never
 else
-	warn "Rust 1.89 is not installed, so the MSRV check was skipped"
+	skip_check "msrv" "Rust 1.89 is not installed, so the MSRV check was skipped"
 fi
 run_check "doc tests" "doc tests failed" cargo test --workspace --all-features --locked --doc
 run_check "docs" "the docs do not build" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
@@ -76,9 +86,13 @@ run_check "unused dependencies" "remove the dependency machete reports" cargo ma
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
 	run_check "coverage" "line coverage is below the 80 percent floor; add a test for the changed code" cargo llvm-cov --workspace --all-features --fail-under-lines 80 --summary-only
 else
-	warn "cargo-llvm-cov is not installed, so the coverage floor was skipped"
+	skip_check "coverage" "cargo-llvm-cov is not installed, so the coverage floor was skipped"
 fi
 run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1 --config .gitleaks.toml
 run_check "secret scan (history)" "a credential pattern is in the commit history" gitleaks git --redact --exit-code 1 --config .gitleaks.toml
 
-say SUCCESS "gate passed: $REPO"
+if ((${#SKIPPED[@]})); then
+	say WARNING "gate passed with skipped checks: ${SKIPPED[*]}"
+else
+	say SUCCESS "gate passed: $REPO"
+fi

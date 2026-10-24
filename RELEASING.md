@@ -42,14 +42,14 @@ git push -u origin release/prepare-X-Y-Z
 gh pr create --fill --base main
 ```
 
-3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh`, builds the host binary plus the aarch64, musl, and Windows targets with `cargo-zigbuild`, adds shell completions, the manual page, and the MCPB bundle, writes one archive and checksum per target, installs the host binary into `~/.local/bin` (override with `OWN_SERPER_INSTALL_DIR`), and stamps the host archive digest into the npm loader.
+3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh` with `OWN_SERPER_STRICT_GATE=1` so no check is skipped, builds the host binary plus the aarch64, musl, and Windows targets with `cargo-zigbuild`, adds shell completions, the manual page, and the MCPB bundle, writes one archive and checksum per target, installs the host binary into `~/.local/bin` (override with `OWN_SERPER_INSTALL_DIR`), and stamps the `x86_64-unknown-linux-gnu` archive digest into the npm loader, which is the target it downloads.
 
 ```bash
 git switch main && git pull
 tools/release.sh --package
 ```
 
-The output is one `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256` per target, `dist/ownserp-X.Y.Z.mcpb` plus `.sha256`, and `packages/npm/bin/ownserp.js` now pins the host digest. Commit that stamp on a release branch, open a pull request, and merge it.
+The output is one `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256` per target, `dist/ownserp-X.Y.Z.mcpb` plus `.sha256`, and `packages/npm/bin/ownserp.js` now pins the `x86_64-unknown-linux-gnu` archive digest. Commit that stamp on a release branch, open a pull request, and merge it.
 
 4. Tag the merged commit, then publish, on your order.
 
