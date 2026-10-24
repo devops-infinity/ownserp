@@ -156,7 +156,22 @@ pub(crate) fn cap(input: &str, max_chars: usize) -> (String, bool) {
     (out, true)
 }
 
-pub(crate) fn text_field(value: &Value, key: &str) -> Option<String> {
+pub(crate) fn number_or_text(value: &Value, key: &str) -> Option<String> {
+    match value.get(key) {
+        Some(Value::Number(number)) => Some(number.to_string()),
+        _ => text_field(value, key),
+    }
+}
+
+fn reviewer_name(value: &Value) -> Option<String> {
+    value
+        .get("user")
+        .and_then(|user| user.get("name"))
+        .and_then(Value::as_str)
+        .map(sanitize)
+}
+
+fn text_field(value: &Value, key: &str) -> Option<String> {
     value
         .get(key)
         .and_then(Value::as_str)
@@ -524,7 +539,7 @@ pub(crate) fn scholar(raw: &Value, preset: Preset) -> (Vec<ScholarItem>, bool) {
                 Preset::Minimal => None,
                 _ => text_field(value, "publicationInfo"),
             },
-            year: text_field(value, "year"),
+            year: number_or_text(value, "year"),
             cited_by: match preset {
                 Preset::Minimal => None,
                 _ => count_field(value, "citedBy"),
@@ -639,7 +654,9 @@ pub(crate) fn reviews(raw: &Value, preset: Preset) -> (Vec<ReviewItem>, bool) {
             date: text_field(value, "date"),
             snippet,
             author: match preset {
-                Preset::Standard | Preset::Full => text_field(value, "author"),
+                Preset::Standard | Preset::Full => {
+                    text_field(value, "author").or_else(|| reviewer_name(value))
+                }
                 Preset::Minimal => None,
             },
             title: match preset {
@@ -1158,6 +1175,24 @@ pub fn summary_text(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_scholar_year_is_read_when_it_is_a_number() {
+        let raw = serde_json::json!({
+            "organic": [{"title": "t", "link": "l", "snippet": "s", "year": 2024}]
+        });
+        let items = scholar(&raw, Preset::Standard).0;
+        assert_eq!(items[0].year.as_deref(), Some("2024"));
+    }
+
+    #[test]
+    fn a_reviewer_name_is_read_from_the_user_object() {
+        let raw = serde_json::json!({
+            "reviews": [{"rating": 5, "date": "d", "snippet": "s", "user": {"name": "A Reviewer"}}]
+        });
+        let items = reviews(&raw, Preset::Standard).0;
+        assert_eq!(items[0].author.as_deref(), Some("A Reviewer"));
+    }
     use super::*;
     use proptest::prelude::*;
 

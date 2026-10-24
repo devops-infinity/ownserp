@@ -15,6 +15,7 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ### Fixed
 
+- A scholar result's year is now read when Serper sends it as a number, and a review's author is read from `user.name`, which is where the live API puts it. Both fields used to come back empty.
 - A cache entry larger than the byte cap no longer empties the cache, and a poisoned cache lock is recovered instead of failing every later call.
 - A scrape whose response carries no credit figure is now booked with no actual credits and the 10-credit estimate, instead of recording 2 as if it were the real price.
 - A 400 answer that says the balance is empty now reports `serper.rate_limited`, so an agent stops retrying against an exhausted account.
