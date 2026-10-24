@@ -38,7 +38,7 @@ case "${1:-}" in
 	;;
 esac
 
-say INFO "paste the granular token, then press Enter (input is hidden)"
+log_line INFO "paste the granular token, then press Enter (input is hidden)"
 IFS= read -rs TOKEN
 printf '\n' >&2
 [[ -n "${TOKEN//[[:space:]]/}" ]] || die "no token entered"
@@ -61,4 +61,4 @@ if [[ "$STATUS" -ne 0 ]]; then
 fi
 mv "$SCRATCH" "$NPMRC"
 chmod 600 "$NPMRC"
-say SUCCESS "npm authenticated as $WHO; publishing no longer needs a one-time code"
+log_line SUCCESS "npm authenticated as $WHO; publishing no longer needs a one-time code"

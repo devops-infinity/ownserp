@@ -50,7 +50,7 @@ Control: optional global inbound rate limit (`OWN_SERPER_HTTP_QPS`), a 1 MiB bod
 
 ### Ledger tampering or loss
 
-Control: each row hashes its predecessor, the chain is checked at every start and by `ownserp audit verify`, the file is append-only, the file is locked for the lifetime of a server process so two writers cannot fork the chain, the directory is owner-only (0700) and the file is owner-only (0600) on Unix, and a single line is capped at 1 MiB so a damaged file cannot exhaust memory. A killed write leaves at most one partial final line, which the next start ignores and warns about. Residual risk: an attacker with write access to the data directory can truncate the file at a row boundary. The chain catches edits and any removal that breaks a link, not a clean tail truncation.
+Control: each row hashes its predecessor, the chain is checked at every start and by `ownserp audit verify`, the file is append-only, the file is locked exclusively for each read-and-append and shared for each read of the totals, so two writers cannot fork the chain and no writer chains onto a partial row, the directory is owner-only (0700) and the file is owner-only (0600) on Unix, and a single line is capped at 1 MiB so a damaged file cannot exhaust memory. A killed write leaves at most one partial final line, which the next process to take the exclusive lock truncates and warns about. Residual risk: an attacker with write access to the data directory can truncate the file at a row boundary. The chain catches edits and any removal that breaks a link, not a clean tail truncation.
 
 ### Oversized or malformed upstream data
 

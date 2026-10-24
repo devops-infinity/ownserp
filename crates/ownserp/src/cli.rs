@@ -59,8 +59,11 @@ pub(crate) struct ServeArgs {
     pub(crate) qps: Option<u32>,
     #[arg(long, value_parser = parse_pack, help = "Credit pack tier for dollar figures")]
     pub(crate) pack: Option<PackTier>,
-    #[arg(long, help = "Enable the response cache for this many seconds")]
-    pub(crate) cache_ttl: Option<u64>,
+    #[arg(
+        long = "cache-ttl",
+        help = "Enable the response cache for this many seconds"
+    )]
+    pub(crate) cache_ttl_secs: Option<u64>,
     #[arg(
         long,
         help = "Enable the batch search tool",
@@ -97,7 +100,7 @@ impl ServeArgs {
             ledger_dir: self.ledger_dir,
             qps: self.qps,
             pack: self.pack,
-            cache_ttl_secs: self.cache_ttl,
+            cache_ttl_secs: self.cache_ttl_secs,
             enable_batch,
         }
     }
@@ -148,20 +151,20 @@ pub(crate) enum AuditAction {
     #[command(about = "Recompute the ledger hash chain and report any break")]
     Verify {
         #[arg(
-            long,
+            long = "file",
             help = "Ledger file, defaulting to calls.jsonl in the data directory"
         )]
-        file: Option<PathBuf>,
+        ledger_file: Option<PathBuf>,
     },
     #[command(
-        about = "Verify the chain, archive the ledger, and leave a fresh one for the next start; stop the server first"
+        about = "Verify the chain, archive the ledger, and leave a fresh one for the next start"
     )]
     Rotate {
         #[arg(
-            long,
+            long = "file",
             help = "Ledger file, defaulting to calls.jsonl in the data directory"
         )]
-        file: Option<PathBuf>,
+        ledger_file: Option<PathBuf>,
     },
 }
 
@@ -214,7 +217,7 @@ mod tests {
             ledger_dir: None,
             qps: None,
             pack: None,
-            cache_ttl: None,
+            cache_ttl_secs: None,
             enable_batch: false,
             no_batch: false,
         };
@@ -233,7 +236,7 @@ mod tests {
             ledger_dir: None,
             qps: None,
             pack: None,
-            cache_ttl: None,
+            cache_ttl_secs: None,
             enable_batch: false,
             no_batch: true,
         };

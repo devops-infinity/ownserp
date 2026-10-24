@@ -98,9 +98,9 @@ impl Endpoint {
         !matches!(self, Self::Locations)
     }
 
-    pub fn estimated_cost(self, num: Option<u8>) -> CreditCost {
+    pub fn estimated_cost(self, num_results: Option<u8>) -> CreditCost {
         let base = self.base_cost();
-        if self == Self::Images && num.is_some_and(|results| results > 10) {
+        if self == Self::Images && num_results.is_some_and(|count| count > 10) {
             CreditCost::new(base.get().saturating_mul(2))
         } else {
             base
@@ -108,20 +108,20 @@ impl Endpoint {
     }
 }
 
-pub fn usd_for(credits: u32, pack: PackTier, override_rate: Option<f64>) -> Option<f64> {
-    let per_thousand = override_rate.or_else(|| pack.usd_per_thousand())?;
-    let raw = f64::from(credits) * per_thousand / 1000.0;
+pub fn usd_for_call(credits: u32, pack: PackTier, override_rate: Option<f64>) -> Option<f64> {
+    let usd_per_1k = override_rate.or_else(|| pack.usd_per_1k())?;
+    let raw = f64::from(credits) * usd_per_1k / 1000.0;
     Some(round_micros(raw))
 }
 
 pub fn usd_for_credits(credits: u64, pack: PackTier, override_rate: Option<f64>) -> Option<f64> {
-    let per_thousand = override_rate.or_else(|| pack.usd_per_thousand())?;
-    let raw = credits as f64 * per_thousand / 1000.0;
+    let usd_per_1k = override_rate.or_else(|| pack.usd_per_1k())?;
+    let raw = credits as f64 * usd_per_1k / 1000.0;
     Some(round_micros(raw))
 }
 
-fn round_micros(value: f64) -> f64 {
-    (value * 1_000_000.0).round() / 1_000_000.0
+fn round_micros(dollars: f64) -> f64 {
+    (dollars * 1_000_000.0).round() / 1_000_000.0
 }
 
 #[cfg(test)]
@@ -146,14 +146,14 @@ mod tests {
 
     #[test]
     fn dollars_round_to_six_places() {
-        assert_eq!(usd_for(1, PackTier::Starter, None), Some(0.001));
-        assert_eq!(usd_for(3, PackTier::Standard, None), Some(0.00225));
-        assert_eq!(usd_for(1, PackTier::Custom, Some(2.0)), Some(0.002));
+        assert_eq!(usd_for_call(1, PackTier::Starter, None), Some(0.001));
+        assert_eq!(usd_for_call(3, PackTier::Standard, None), Some(0.00225));
+        assert_eq!(usd_for_call(1, PackTier::Custom, Some(2.0)), Some(0.002));
     }
 
     #[test]
     fn an_unset_custom_rate_stays_unknown() {
-        assert_eq!(usd_for(1, PackTier::Custom, None), None);
+        assert_eq!(usd_for_call(1, PackTier::Custom, None), None);
         assert_eq!(usd_for_credits(500, PackTier::Custom, None), None);
     }
 

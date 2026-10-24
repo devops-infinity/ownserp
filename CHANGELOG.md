@@ -18,6 +18,13 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Changed
+
+- Any number of `ownserp serve` processes on one machine now share one ledger, one hash chain, and one running total. A process holds the file lock only while it reads the rows written since its last call and appends its own row, instead of holding it for as long as it runs.
+- `serper_session` reports the credits written by every process, and `session_budget_credits` counts all of them. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the running process count times the per-call credit ceiling.
+- `ownserp audit rotate` no longer refuses while a server runs. A running server notices the new file and starts a fresh chain on its next write.
+- `args.key` is created by linking a temporary file into place, so several processes starting at once read one key instead of the last one to rename its own.
+
 ## [1.2.0] - 2026-10-24
 
 ### Changed

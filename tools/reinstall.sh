@@ -63,11 +63,11 @@ done
 require_tool cargo "install Rust from https://rustup.rs"
 
 if [[ "$SKIP_GATE" -eq 0 ]]; then
-	say INFO "running the verification gate"
+	log_line INFO "running the verification gate"
 	"$REPO/tools/verify.sh"
 fi
 
-say INFO "building the $PROFILE binary"
+log_line INFO "building the $PROFILE binary"
 if [[ "$PROFILE" == "release" ]]; then
 	cargo build --release --locked --bin ownserp
 	BINARY="$REPO/target/release/ownserp"
@@ -82,7 +82,7 @@ INSTALL_TMP="$(mktemp "$INSTALL_DIR/.ownserp.new.XXXXXX")"
 trap 'rm -f -- "${INSTALL_TMP:-}"' EXIT
 install -m 0755 "$BINARY" "$INSTALL_TMP"
 mv -f -- "$INSTALL_TMP" "$INSTALL_DIR/ownserp"
-say SUCCESS "installed $("$INSTALL_DIR/ownserp" --version) to $INSTALL_DIR/ownserp"
+log_line SUCCESS "installed $("$INSTALL_DIR/ownserp" --version) to $INSTALL_DIR/ownserp"
 
 case ":$PATH:" in
 *":$INSTALL_DIR:"*) ;;

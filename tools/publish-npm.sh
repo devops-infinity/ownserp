@@ -64,18 +64,18 @@ fi
 LOG="$(mktemp "${TMPDIR:-/tmp}/ownserp-npm-publish.XXXXXX")"
 trap 'rm -f -- "$LOG"' EXIT
 
-say INFO "publishing $PACKAGE_NAME $PACKAGE_VERSION"
+log_line INFO "publishing $PACKAGE_NAME $PACKAGE_VERSION"
 if ! npm publish "$PACKAGE_DIR" --access public 2>&1 | tee "$LOG"; then
 	if grep -q EOTP "$LOG"; then
 		die "npm asked for a one-time code; run tools/npm-auth-setup.sh once with a granular token that bypasses two-factor authentication"
 	fi
 	die "npm publish failed; read the output above"
 fi
-PUBLISHED=""
+registry_version=""
 for _ in $(seq 1 24); do
-	PUBLISHED="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)"
-	[[ "$PUBLISHED" == "$PACKAGE_VERSION" ]] && break
+	registry_version="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)"
+	[[ "$registry_version" == "$PACKAGE_VERSION" ]] && break
 	sleep 10
 done
-[[ "$PUBLISHED" == "$PACKAGE_VERSION" ]] || die "npm accepted the publish but the registry still answers ${PUBLISHED:-nothing} for $PACKAGE_VERSION after 240 seconds"
-say SUCCESS "published $PACKAGE_NAME $PACKAGE_VERSION"
+[[ "$registry_version" == "$PACKAGE_VERSION" ]] || die "npm accepted the publish but the registry still answers ${registry_version:-nothing} for $PACKAGE_VERSION after 240 seconds"
+log_line SUCCESS "published $PACKAGE_NAME $PACKAGE_VERSION"

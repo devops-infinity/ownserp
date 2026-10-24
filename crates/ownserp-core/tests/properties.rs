@@ -31,13 +31,13 @@ proptest! {
     #[test]
     fn sanitize_strips_invisible_characters(input in ".*") {
         let cleaned = sanitize(&input);
-        let has_invisible = cleaned.chars().any(|ch| matches!(ch,
+        let has_invisible = cleaned.chars().any(|character| matches!(character,
             '\u{00AD}' | '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}'
             | '\u{2060}'..='\u{206F}' | '\u{FEFF}' | '\u{FE00}'..='\u{FE0F}'
             | '\u{E0000}'..='\u{E007F}'));
         prop_assert!(!has_invisible, "sanitized text kept an invisible character");
         prop_assert!(
-            !cleaned.chars().any(|ch| ch.is_control()),
+            !cleaned.chars().any(|character| character.is_control()),
             "sanitized text kept a control character"
         );
         prop_assert!(cleaned.chars().count() <= input.chars().count());

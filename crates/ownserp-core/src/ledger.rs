@@ -1,10 +1,10 @@
 use std::collections::BTreeMap;
-use std::fs::{File, OpenOptions};
-use std::io::{BufReader, Write};
+use std::fs::{File, OpenOptions, TryLockError};
+use std::io::{BufReader, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -12,6 +12,10 @@ use sha2::{Digest, Sha256};
 use crate::error::{Error, Result};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
+const GENESIS: &str = "genesis";
+const LOCK_WAIT_STEP: Duration = Duration::from_millis(10);
+const LOCK_WAIT_LIMIT: Duration = Duration::from_secs(5);
+const MAX_RELOADS: u8 = 8;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolTotals {
@@ -67,13 +71,36 @@ pub struct LedgerRow {
     pub hash: String,
 }
 
-struct LedgerState {
-    path: PathBuf,
-    file: File,
+struct Cursor {
+    offset: u64,
     seq: u64,
     last_hash: String,
     totals: Totals,
+}
+
+impl Cursor {
+    fn genesis() -> Self {
+        Self {
+            offset: 0,
+            seq: 0,
+            last_hash: String::from(GENESIS),
+            totals: Totals::default(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CatchUp {
+    Applied,
+    Replaced,
+}
+
+struct LedgerState {
+    path: PathBuf,
+    file: File,
+    cursor: Cursor,
     pending: u64,
+    lock_wait: Duration,
 }
 
 #[derive(Clone)]
@@ -95,6 +122,10 @@ impl Drop for Reservation {
 
 impl Ledger {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
+        Self::open_within(path, LOCK_WAIT_LIMIT)
+    }
+
+    fn open_within(path: impl Into<PathBuf>, lock_wait: Duration) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
             let existed = parent.exists();
@@ -111,59 +142,29 @@ impl Ledger {
             }
         }
         ensure_regular_file(&path)?;
-        let mut seq = 0;
-        let mut last_hash = String::from("genesis");
-        let mut totals = Totals::default();
-        let mut previous = String::from("genesis");
-        let valid_len = walk_rows(&path, |row| {
-            let expected = chain_hash(&previous, row);
-            if row.hash != expected || row.prev != previous {
-                return Err(Error::Ledger(format!(
-                    "hash chain broken at sequence {} in {}",
-                    row.seq,
-                    path.display()
-                )));
-            }
-            previous = row.hash.clone();
-            seq = row.seq;
-            last_hash = row.hash.clone();
-            accumulate(&mut totals, row);
-            Ok(())
-        })?;
-        let mut options = OpenOptions::new();
-        options.create(true).read(true).append(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt;
-            options.mode(0o600);
-        }
-        let file = options.open(&path)?;
+        let file = open_ledger_file(&path)?;
         ensure_same_file(&path, &file)?;
-        file.try_lock().map_err(|error| {
-            Error::Ledger(format!(
-                "another ownserp process holds {}; stop it, or give this client its own OWN_SERPER_LEDGER_DIR: {error}",
-                path.display()
-            ))
-        })?;
+        let locked = LockedFile::exclusive(&file, &path, lock_wait)?;
         lock_down_file(&path, &file)?;
         sync_parent_dir(&path);
-        let stored = file.metadata()?.len();
-        if stored > valid_len {
-            file.set_len(valid_len)?;
+        let cursor = load_chain(&file, &path)?;
+        let file_len = file.metadata()?.len();
+        if file_len > cursor.offset {
+            file.set_len(cursor.offset)?;
             tracing::warn!(
                 path = %path.display(),
-                removed = stored.saturating_sub(valid_len),
+                removed = file_len.saturating_sub(cursor.offset),
                 "truncated a partial final ledger line before appending"
             );
         }
+        drop(locked);
         Ok(Self {
             state: Arc::new(Mutex::new(LedgerState {
                 path,
                 file,
-                seq,
-                last_hash,
-                totals,
+                cursor,
                 pending: 0,
+                lock_wait,
             })),
             healthy: Arc::new(AtomicBool::new(true)),
         })
@@ -178,54 +179,21 @@ impl Ledger {
     }
 
     fn append_inner(&self, record: CallRecord) -> Result<LedgerRow> {
-        let (written, handle) = {
-            let mut state = self.lock()?;
-            let row = LedgerRow {
-                seq: state.seq.saturating_add(1),
-                ts_unix: unix_seconds(),
-                tool: record.tool,
-                endpoint: record.endpoint,
-                args_hash: record.args_hash,
-                credits_estimated: record.credits_estimated,
-                credits_actual: record.credits_actual,
-                batch_multiplier: record.batch_multiplier,
-                duration_ms: record.duration_ms,
-                status: record.status,
-                response_bytes: record.response_bytes,
-                tokens: record.tokens,
-                tokens_saved: record.tokens_saved,
-                cache_hit: record.cache_hit,
-                prev: state.last_hash.clone(),
-                hash: String::new(),
-            };
-            let hash = chain_hash(&row.prev, &row);
-            let written = LedgerRow { hash, ..row };
-            let mut line = serde_json::to_string(&written).map_err(|error| Error::Json {
-                context: "encoding a ledger row",
-                source: error,
-            })?;
-            line.push('\n');
-            if line.len() > MAX_LINE_BYTES {
-                return Err(Error::Ledger(format!(
-                    "a ledger row of {} bytes passes the {MAX_LINE_BYTES} byte cap",
-                    line.len()
-                )));
+        let mut state = self.lock()?;
+        let mut reloads = 0u8;
+        loop {
+            if !file_matches(&state.path, &state.file)? {
+                state.reload(&mut reloads)?;
+                continue;
             }
-            state.file.write_all(line.as_bytes())?;
-            state.seq = written.seq;
-            state.last_hash = written.hash.clone();
-            accumulate(&mut state.totals, &written);
-            let handle = state.file.try_clone().map_err(|error| Error::Io {
-                context: "cloning the ledger handle",
-                source: error,
-            })?;
-            (written, handle)
-        };
-        handle.sync_data().map_err(|error| Error::Io {
-            context: "syncing the ledger",
-            source: error,
-        })?;
-        Ok(written)
+            let handle = clone_handle(&state.file)?;
+            let locked = LockedFile::exclusive(&handle, &state.path, state.lock_wait)?;
+            if state.catch_up(true)? == CatchUp::Replaced {
+                drop(locked);
+                continue;
+            }
+            return state.write_row(record);
+        }
     }
 
     pub fn reserve(&self, credits: u32, budget: u64) -> Result<Reservation> {
@@ -235,18 +203,28 @@ impl Ledger {
             ));
         }
         let mut state = self.lock()?;
-        let committed = state.totals.credits.saturating_add(state.pending);
-        if committed.saturating_add(u64::from(credits)) > budget {
-            return Err(Error::BudgetRefused(format!(
-                "{} credits would pass the session budget of {budget}, {} already committed",
-                credits, committed
-            )));
+        let mut reloads = 0u8;
+        loop {
+            let handle = clone_handle(&state.file)?;
+            let locked = LockedFile::shared(&handle, &state.path, state.lock_wait)?;
+            if state.catch_up(false)? == CatchUp::Replaced {
+                drop(locked);
+                state.reload(&mut reloads)?;
+                continue;
+            }
+            let committed = state.cursor.totals.credits.saturating_add(state.pending);
+            if committed.saturating_add(u64::from(credits)) > budget {
+                return Err(Error::BudgetRefused(format!(
+                    "{} credits would pass the session budget of {budget}, {} already committed",
+                    credits, committed
+                )));
+            }
+            state.pending = state.pending.saturating_add(u64::from(credits));
+            return Ok(Reservation {
+                ledger: self.clone(),
+                credits,
+            });
         }
-        state.pending = state.pending.saturating_add(u64::from(credits));
-        Ok(Reservation {
-            ledger: self.clone(),
-            credits,
-        })
     }
 
     fn settle(&self, credits: u32) {
@@ -256,8 +234,18 @@ impl Ledger {
     }
 
     pub fn totals(&self) -> Result<Totals> {
-        let state = self.lock()?;
-        Ok(state.totals.clone())
+        let mut state = self.lock()?;
+        let mut reloads = 0u8;
+        loop {
+            let handle = clone_handle(&state.file)?;
+            let locked = LockedFile::shared(&handle, &state.path, state.lock_wait)?;
+            if state.catch_up(false)? == CatchUp::Replaced {
+                drop(locked);
+                state.reload(&mut reloads)?;
+                continue;
+            }
+            return Ok(state.cursor.totals.clone());
+        }
     }
 
     pub fn pending(&self) -> Result<u64> {
@@ -277,29 +265,142 @@ impl Ledger {
     }
 }
 
+impl LedgerState {
+    fn catch_up(&mut self, repair: bool) -> Result<CatchUp> {
+        if !file_matches(&self.path, &self.file)? {
+            return Ok(CatchUp::Replaced);
+        }
+        let LedgerState {
+            path, file, cursor, ..
+        } = self;
+        let path: &Path = path;
+        let file: &File = file;
+        let file_len = file.metadata()?.len();
+        if file_len < cursor.offset {
+            return Err(Error::Ledger(format!(
+                "the ledger at {} is shorter than the part this process already read; restore it or start a fresh one",
+                path.display()
+            )));
+        }
+        if file_len == cursor.offset {
+            return Ok(CatchUp::Applied);
+        }
+        let mut previous = cursor.last_hash.clone();
+        let seq = &mut cursor.seq;
+        let totals = &mut cursor.totals;
+        let (_, valid_end) = read_rows(file, path, cursor.offset, |row| {
+            let expected = chain_hash(&previous, row);
+            if row.hash != expected || row.prev != previous {
+                return Err(Error::Ledger(format!(
+                    "hash chain broken at sequence {} in {}",
+                    row.seq,
+                    path.display()
+                )));
+            }
+            previous = row.hash.clone();
+            *seq = row.seq;
+            accumulate(totals, row);
+            Ok(())
+        })?;
+        cursor.offset = valid_end;
+        cursor.last_hash = previous;
+        if repair && file_len > valid_end {
+            file.set_len(valid_end)?;
+            tracing::warn!(
+                path = %path.display(),
+                removed = file_len.saturating_sub(valid_end),
+                "truncated a partial final ledger line before appending"
+            );
+        }
+        Ok(CatchUp::Applied)
+    }
+
+    fn reload(&mut self, reloads: &mut u8) -> Result<()> {
+        self.adopt_current_file()?;
+        *reloads = reloads.saturating_add(1);
+        if *reloads > MAX_RELOADS {
+            return Err(Error::Ledger(format!(
+                "the ledger at {} keeps being replaced; stop whatever is rotating it",
+                self.path.display()
+            )));
+        }
+        Ok(())
+    }
+
+    fn adopt_current_file(&mut self) -> Result<()> {
+        ensure_regular_file(&self.path)?;
+        let file = open_ledger_file(&self.path)?;
+        ensure_same_file(&self.path, &file)?;
+        let locked = LockedFile::exclusive(&file, &self.path, self.lock_wait)?;
+        lock_down_file(&self.path, &file)?;
+        sync_parent_dir(&self.path);
+        let cursor = load_chain(&file, &self.path)?;
+        let file_len = file.metadata()?.len();
+        if file_len > cursor.offset {
+            file.set_len(cursor.offset)?;
+        }
+        drop(locked);
+        self.file = file;
+        self.cursor = cursor;
+        Ok(())
+    }
+
+    fn write_row(&mut self, record: CallRecord) -> Result<LedgerRow> {
+        let row = LedgerRow {
+            seq: self.cursor.seq.saturating_add(1),
+            ts_unix: unix_seconds(),
+            tool: record.tool,
+            endpoint: record.endpoint,
+            args_hash: record.args_hash,
+            credits_estimated: record.credits_estimated,
+            credits_actual: record.credits_actual,
+            batch_multiplier: record.batch_multiplier,
+            duration_ms: record.duration_ms,
+            status: record.status,
+            response_bytes: record.response_bytes,
+            tokens: record.tokens,
+            tokens_saved: record.tokens_saved,
+            cache_hit: record.cache_hit,
+            prev: self.cursor.last_hash.clone(),
+            hash: String::new(),
+        };
+        let hash = chain_hash(&row.prev, &row);
+        let written = LedgerRow { hash, ..row };
+        let mut line = serde_json::to_string(&written).map_err(|error| Error::Json {
+            context: "encoding a ledger row",
+            source: error,
+        })?;
+        line.push('\n');
+        if line.len() > MAX_LINE_BYTES {
+            return Err(Error::Ledger(format!(
+                "a ledger row of {} bytes passes the {MAX_LINE_BYTES} byte cap",
+                line.len()
+            )));
+        }
+        let mut writer = &self.file;
+        writer.write_all(line.as_bytes())?;
+        writer.sync_data().map_err(|error| Error::Io {
+            context: "syncing the ledger",
+            source: error,
+        })?;
+        self.cursor.seq = written.seq;
+        self.cursor.last_hash = written.hash.clone();
+        self.cursor.offset = self.cursor.offset.saturating_add(line.len() as u64);
+        accumulate(&mut self.cursor.totals, &written);
+        Ok(written)
+    }
+}
+
 pub fn verify(path: &Path) -> Result<u64> {
     ensure_regular_file(path)?;
-    let mut count = 0u64;
-    let mut previous = String::from("genesis");
-    let _ = walk_rows(path, |row| {
-        if row.prev != previous {
-            return Err(Error::Ledger(format!(
-                "prev link mismatch at sequence {}",
-                row.seq
-            )));
-        }
-        let expected = chain_hash(&previous, row);
-        if row.hash != expected {
-            return Err(Error::Ledger(format!(
-                "hash mismatch at sequence {}",
-                row.seq
-            )));
-        }
-        previous = row.hash.clone();
-        count = count.saturating_add(1);
-        Ok(())
-    })?;
-    Ok(count)
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error.into()),
+    };
+    ensure_same_file(path, &file)?;
+    let _locked = LockedFile::shared(&file, path, LOCK_WAIT_LIMIT)?;
+    count_chain(&file, path)
 }
 
 pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
@@ -309,15 +410,11 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
             path.display()
         )));
     }
-    let rows = verify(path)?;
-    let lock_file = OpenOptions::new().append(true).open(path)?;
-    ensure_same_file(path, &lock_file)?;
-    lock_file.try_lock().map_err(|error| {
-        Error::Ledger(format!(
-            "stop the running server before rotating {}: {error}",
-            path.display()
-        ))
-    })?;
+    ensure_regular_file(path)?;
+    let file = OpenOptions::new().read(true).append(true).open(path)?;
+    ensure_same_file(path, &file)?;
+    let _locked = LockedFile::exclusive(&file, path, LOCK_WAIT_LIMIT)?;
+    let rows = count_chain(&file, path)?;
     let stamp = unix_seconds();
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = path
@@ -364,20 +461,73 @@ fn read_line_capped<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Opti
     }
 }
 
-fn walk_rows<F>(path: &Path, mut visit: F) -> Result<u64>
+fn read_rows<F>(file: &File, path: &Path, start: u64, visit: F) -> Result<(u64, u64)>
 where
     F: FnMut(&LedgerRow) -> Result<()>,
 {
-    if !path.exists() {
-        return Ok(0);
-    }
-    let mut reader = BufReader::new(File::open(path)?);
+    let mut seeker = file;
+    seeker.seek(SeekFrom::Start(start))?;
+    let mut reader = BufReader::new(file);
+    let (rows, valid_len) = walk_reader(&mut reader, path, visit)?;
+    Ok((rows, start.saturating_add(valid_len)))
+}
+
+fn load_chain(file: &File, path: &Path) -> Result<Cursor> {
+    let mut cursor = Cursor::genesis();
+    let mut previous = String::from(GENESIS);
+    let (_, valid_end) = read_rows(file, path, 0, |row| {
+        let expected = chain_hash(&previous, row);
+        if row.hash != expected || row.prev != previous {
+            return Err(Error::Ledger(format!(
+                "hash chain broken at sequence {} in {}",
+                row.seq,
+                path.display()
+            )));
+        }
+        previous = row.hash.clone();
+        cursor.seq = row.seq;
+        cursor.last_hash = row.hash.clone();
+        accumulate(&mut cursor.totals, row);
+        Ok(())
+    })?;
+    cursor.offset = valid_end;
+    Ok(cursor)
+}
+
+fn count_chain(file: &File, path: &Path) -> Result<u64> {
+    let mut previous = String::from(GENESIS);
+    let (rows, _) = read_rows(file, path, 0, |row| {
+        if row.prev != previous {
+            return Err(Error::Ledger(format!(
+                "prev link mismatch at sequence {}",
+                row.seq
+            )));
+        }
+        let expected = chain_hash(&previous, row);
+        if row.hash != expected {
+            return Err(Error::Ledger(format!(
+                "hash mismatch at sequence {}",
+                row.seq
+            )));
+        }
+        previous = row.hash.clone();
+        Ok(())
+    })?;
+    Ok(rows)
+}
+
+fn walk_reader<R, F>(reader: &mut R, path: &Path, mut visit: F) -> Result<(u64, u64)>
+where
+    R: std::io::BufRead,
+    F: FnMut(&LedgerRow) -> Result<()>,
+{
     let mut buffer = Vec::new();
     let mut consumed = 0u64;
+    let mut rows = 0u64;
     let mut valid_len = 0u64;
     loop {
         buffer.clear();
-        let Some(line) = read_line_capped(&mut reader)? else {
+        let Some(line) = read_line_capped(reader)? else {
             break;
         };
         let read = line.len();
@@ -398,6 +548,7 @@ where
         match serde_json::from_str::<LedgerRow>(&text) {
             Ok(row) if terminated => {
                 visit(&row)?;
+                rows = rows.saturating_add(1);
                 valid_len = consumed;
             }
             Ok(_) => {
@@ -420,7 +571,7 @@ where
             }
         }
     }
-    Ok(valid_len)
+    Ok((rows, valid_len))
 }
 
 fn sync_parent_dir(path: &Path) {
@@ -434,6 +585,74 @@ fn sync_parent_dir(path: &Path) {
     }
     #[cfg(not(unix))]
     let _ = path;
+}
+
+fn open_ledger_file(path: &Path) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).read(true).append(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    Ok(options.open(path)?)
+}
+
+fn clone_handle(file: &File) -> Result<File> {
+    file.try_clone().map_err(|error| Error::Io {
+        context: "cloning the ledger handle",
+        source: error,
+    })
+}
+
+struct LockedFile<'a> {
+    file: &'a File,
+}
+
+impl<'a> LockedFile<'a> {
+    fn exclusive(file: &'a File, path: &Path, limit: Duration) -> Result<Self> {
+        wait_for_lock(file, path, limit, true)?;
+        Ok(Self { file })
+    }
+
+    fn shared(file: &'a File, path: &Path, limit: Duration) -> Result<Self> {
+        wait_for_lock(file, path, limit, false)?;
+        Ok(Self { file })
+    }
+}
+
+impl Drop for LockedFile<'_> {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
+}
+
+fn wait_for_lock(file: &File, path: &Path, limit: Duration, exclusive: bool) -> Result<()> {
+    let deadline = Instant::now() + limit;
+    loop {
+        let outcome = if exclusive {
+            file.try_lock()
+        } else {
+            file.try_lock_shared()
+        };
+        match outcome {
+            Ok(()) => return Ok(()),
+            Err(TryLockError::WouldBlock) => {}
+            Err(error) => {
+                return Err(Error::Io {
+                    context: "locking the ledger",
+                    source: error.into(),
+                });
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(Error::Ledger(format!(
+                "the ledger at {} is held by another ownserp process. An older ownserp holds it for as long as it runs, so stop that copy. To run separately instead, give this client its own OWN_SERPER_LEDGER_DIR",
+                path.display()
+            )));
+        }
+        std::thread::sleep(LOCK_WAIT_STEP);
+    }
 }
 
 fn ensure_regular_file(path: &Path) -> Result<()> {
@@ -462,34 +681,44 @@ fn ensure_regular_file(path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn ensure_same_file(path: &Path, file: &File) -> Result<()> {
+fn file_matches(path: &Path, file: &File) -> Result<bool> {
     use std::os::unix::fs::MetadataExt;
 
     let opened = file
         .metadata()
         .map_err(|error| Error::Ledger(format!("cannot stat the open ledger: {error}")))?;
-    let on_disk = std::fs::symlink_metadata(path).map_err(|error| {
-        Error::Ledger(format!(
-            "cannot re-check {} after opening it: {error}",
+    match std::fs::symlink_metadata(path) {
+        Ok(on_disk) => {
+            if on_disk.file_type().is_symlink() || !on_disk.is_file() {
+                return Err(Error::Ledger(format!(
+                    "{} is not a regular file; make the ledger directory private and retry",
+                    path.display()
+                )));
+            }
+            Ok(opened.dev() == on_disk.dev() && opened.ino() == on_disk.ino())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(Error::Ledger(format!(
+            "cannot re-check {}: {error}",
             path.display()
-        ))
-    })?;
-    if on_disk.file_type().is_symlink()
-        || !on_disk.is_file()
-        || opened.dev() != on_disk.dev()
-        || opened.ino() != on_disk.ino()
-    {
-        return Err(Error::Ledger(format!(
-            "{} changed while it was opened; make the ledger directory private and retry",
-            path.display()
-        )));
+        ))),
     }
-    Ok(())
 }
 
 #[cfg(not(unix))]
-fn ensure_same_file(_path: &Path, _file: &File) -> Result<()> {
-    Ok(())
+fn file_matches(_path: &Path, _file: &File) -> Result<bool> {
+    Ok(true)
+}
+
+fn ensure_same_file(path: &Path, file: &File) -> Result<()> {
+    if file_matches(path, file)? {
+        Ok(())
+    } else {
+        Err(Error::Ledger(format!(
+            "{} changed while it was opened; make the ledger directory private and retry",
+            path.display()
+        )))
+    }
 }
 
 #[cfg(unix)]
@@ -602,17 +831,226 @@ mod tests {
         }
     }
 
+    fn record_cost(credits: u32) -> CallRecord {
+        let mut priced = record();
+        priced.credits_estimated = credits;
+        priced
+    }
+
     #[test]
-    fn a_second_handle_is_refused_while_the_first_is_open() {
-        let path = temp_path("lock");
+    fn two_handles_open_on_one_path() {
+        let path = temp_path("shared-open");
         let _ = std::fs::remove_file(&path);
         let first = Ledger::open(&path).expect("first handle");
+        let second = Ledger::open(&path).expect("second handle");
+        assert_eq!(second.totals().expect("totals").calls, 0);
+        drop((first, second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn interleaved_appends_give_a_contiguous_chain() {
+        let path = temp_path("interleaved");
+        let _ = std::fs::remove_file(&path);
+        let first = Ledger::open(&path).expect("first handle");
+        let second = Ledger::open(&path).expect("second handle");
+        let one = first.append(record()).expect("first row");
+        let two = second.append(record()).expect("second row");
+        let three = first.append(record()).expect("third row");
+        let four = second.append(record()).expect("fourth row");
+        assert_eq!((one.seq, two.seq, three.seq, four.seq), (1, 2, 3, 4));
+        assert_eq!(two.prev, one.hash);
+        assert_eq!(three.prev, two.hash);
+        assert_eq!(four.prev, three.hash);
+        drop((first, second));
+        assert_eq!(verify(&path).expect("chain verifies"), 4);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn totals_include_rows_written_by_another_handle() {
+        let path = temp_path("shared-totals");
+        let _ = std::fs::remove_file(&path);
+        let first = Ledger::open(&path).expect("first handle");
+        let second = Ledger::open(&path).expect("second handle");
+        first.append(record()).expect("first row");
+        second.append(record()).expect("second row");
+        second.append(record()).expect("third row");
+        assert_eq!(first.totals().expect("first totals").calls, 3);
+        assert_eq!(second.totals().expect("second totals").calls, 3);
+        drop((first, second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_budget_spent_through_one_handle_refuses_the_other() {
+        let path = temp_path("shared-budget");
+        let _ = std::fs::remove_file(&path);
+        let first = Ledger::open(&path).expect("first handle");
+        let second = Ledger::open(&path).expect("second handle");
+        let held = first.reserve(8, 10).expect("reservation");
+        first.append(record_cost(8)).expect("append");
+        drop(held);
         assert!(
-            Ledger::open(&path).is_err(),
-            "the lock must refuse a second handle"
+            second.reserve(3, 10).is_err(),
+            "8 already written and 3 more passes a budget of 10"
         );
-        drop(first);
-        assert!(Ledger::open(&path).is_ok(), "the lock must release on drop");
+        assert!(second.reserve(2, 10).is_ok(), "2 still fits a budget of 10");
+        drop((first, second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn eight_threads_append_one_chain() {
+        let path = temp_path("threads");
+        let _ = std::fs::remove_file(&path);
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                std::thread::spawn(move || {
+                    let ledger = Ledger::open(&path).expect("handle");
+                    for _ in 0..50 {
+                        ledger.append(record()).expect("append");
+                    }
+                    ledger
+                })
+            })
+            .collect();
+        let handles: Vec<Ledger> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join"))
+            .collect();
+        for ledger in &handles {
+            assert_eq!(ledger.totals().expect("totals").calls, 400);
+        }
+        assert_eq!(verify(&path).expect("chain verifies"), 400);
+        let text = std::fs::read_to_string(&path).expect("read the ledger");
+        let mut seqs: Vec<u64> = text
+            .lines()
+            .map(|line| serde_json::from_str::<LedgerRow>(line).expect("row").seq)
+            .collect();
+        seqs.sort_unstable();
+        assert_eq!(seqs, (1..=400).collect::<Vec<u64>>());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn rotate_while_a_handle_is_open_starts_a_new_chain() {
+        let path = temp_path("rotate-open");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::open(&path).expect("ledger");
+        ledger.append(record()).expect("first row");
+        let (rows, archive) = rotate(&path).expect("rotate");
+        assert_eq!(rows, 1);
+        let appended = ledger.append(record()).expect("append after rotate");
+        assert_eq!(appended.seq, 1);
+        assert_eq!(appended.prev, GENESIS);
+        assert_eq!(ledger.totals().expect("totals").calls, 1);
+        assert_eq!(verify(&archive).expect("archive verifies"), 1);
+        assert_eq!(verify(&path).expect("new chain verifies"), 1);
+        drop(ledger);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&archive);
+    }
+
+    #[test]
+    fn a_replaced_file_is_reported_under_the_lock() {
+        let path = temp_path("replaced");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::open(&path).expect("ledger");
+        ledger.append(record()).expect("first row");
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, b"").expect("replacement");
+        std::fs::rename(&replacement, &path).expect("swap in a new file");
+        let mut state = ledger.lock().expect("state");
+        assert_eq!(state.catch_up(true).expect("catch up"), CatchUp::Replaced);
+        drop(state);
+        drop(ledger);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn opening_waits_for_an_exclusive_holder() {
+        let path = temp_path("wait");
+        let _ = std::fs::remove_file(&path);
+        Ledger::open(&path).expect("create the file");
+        let holder = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let waiter = {
+            let path = path.clone();
+            std::thread::spawn(move || Ledger::open(&path).map(|_| ()))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        holder.unlock().expect("unlock");
+        waiter
+            .join()
+            .expect("join")
+            .expect("the open succeeds once the holder releases");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_lock_held_past_the_limit_fails_with_a_plain_message() {
+        let path = temp_path("timeout");
+        let _ = std::fs::remove_file(&path);
+        Ledger::open(&path).expect("create the file");
+        let holder = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let started = Instant::now();
+        let outcome = Ledger::open_within(&path, Duration::from_millis(60));
+        let elapsed = started.elapsed();
+        let message = outcome
+            .err()
+            .expect("a held lock must not open")
+            .to_string();
+        assert!(
+            message.contains("held by another ownserp process"),
+            "{message}"
+        );
+        assert!(message.contains("OWN_SERPER_LEDGER_DIR"), "{message}");
+        assert!(
+            elapsed >= Duration::from_millis(60),
+            "the wait must respect the limit"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "the wait must not hang: {elapsed:?}"
+        );
+        holder.unlock().expect("unlock");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_partial_final_line_is_removed_on_open() {
+        let path = temp_path("trim");
+        let _ = std::fs::remove_file(&path);
+        {
+            let ledger = Ledger::open(&path).expect("ledger");
+            ledger.append(record()).expect("append");
+        }
+        let complete = std::fs::metadata(&path).expect("stat").len();
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("append open");
+        file.write_all(b"{\"seq\":2").expect("partial write");
+        drop(file);
+        let ledger = Ledger::open(&path).expect("reopen past a partial tail");
+        assert_eq!(ledger.totals().expect("totals").calls, 1);
+        assert_eq!(
+            std::fs::metadata(&path).expect("stat").len(),
+            complete,
+            "the partial line must be gone"
+        );
+        drop(ledger);
         let _ = std::fs::remove_file(&path);
     }
 

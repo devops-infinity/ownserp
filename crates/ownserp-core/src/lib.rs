@@ -26,7 +26,7 @@ pub use config::{
     KEYRING_SERVICE, KEYRING_USER, Overrides, Settings, default_config_dir, default_data_dir,
     keychain_delete, keychain_get, keychain_set, mask,
 };
-pub use cost::{BATCH_MULTIPLIER, Endpoint, Host, usd_for, usd_for_credits};
+pub use cost::{BATCH_MULTIPLIER, Endpoint, Host, usd_for_call, usd_for_credits};
 pub use error::{Error, Result};
 pub use ledger::{CallRecord, Ledger, Totals, rotate, verify};
 pub use projection::{
@@ -48,5 +48,5 @@ pub use types::{
     TimeFilter,
 };
 
-pub const NAME: &str = "OwnSERP";
+pub const APP_NAME: &str = "OwnSERP";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

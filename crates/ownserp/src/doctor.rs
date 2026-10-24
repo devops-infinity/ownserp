@@ -16,7 +16,10 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     }
     emit(&format!("api key: {}", settings.masked_key()))?;
     emit(&format!("pack tier: {:?}", settings.pack()))?;
-    emit(&format!("usd per 1000 credits: {}", usd_rate(&settings)))?;
+    emit(&format!(
+        "usd per 1000 credits: {}",
+        format_usd_rate(&settings)
+    ))?;
     emit(&format!(
         "queries per second ceiling: {}",
         settings.qps().get()
@@ -74,10 +77,10 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn usd_rate(settings: &Settings) -> String {
+fn format_usd_rate(settings: &Settings) -> String {
     match settings
         .usd_per_1k()
-        .or_else(|| settings.pack().usd_per_thousand())
+        .or_else(|| settings.pack().usd_per_1k())
     {
         Some(rate) => format!("${rate:.2}"),
         None => "set SERPER_USD_PER_1K".to_owned(),
@@ -113,9 +116,9 @@ mod tests {
 
     #[test]
     fn the_rate_comes_from_the_pack_or_the_override() {
-        assert_eq!(usd_rate(&settings(&[])), "$1.00");
+        assert_eq!(format_usd_rate(&settings(&[])), "$1.00");
         assert_eq!(
-            usd_rate(&settings(&[("SERPER_USD_PER_1K", "0.42")])),
+            format_usd_rate(&settings(&[("SERPER_USD_PER_1K", "0.42")])),
             "$0.42"
         );
     }

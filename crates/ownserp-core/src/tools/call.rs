@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use crate::cache::ResponseCache;
 use crate::client::SerperClient;
 use crate::config::Settings;
-use crate::cost::{BATCH_MULTIPLIER, Endpoint, usd_for, usd_for_credits};
+use crate::cost::{BATCH_MULTIPLIER, Endpoint, usd_for_call, usd_for_credits};
 use crate::error::{Error, Result};
 use crate::ledger::{CallRecord, Ledger, Reservation};
 use crate::projection::{self, SearchSections};
@@ -75,16 +75,7 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
                 path.display()
             )));
         }
-        Ok(_) => {
-            let bytes = std::fs::read(&path)?;
-            return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
-                Error::Config(format!(
-                    "{} is {} bytes, not the 32-byte arguments key; restore it or remove it on purpose to start a new ledger chain",
-                    path.display(),
-                    bytes.len()
-                ))
-            });
-        }
+        Ok(_) => return read_hash_key(&path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(Error::Config(format!(
@@ -95,8 +86,14 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     }
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|error| Error::Config(format!("os random: {error}")))?;
+    let mut tag = [0u8; 8];
+    getrandom::fill(&mut tag).map_err(|error| Error::Config(format!("os random: {error}")))?;
     std::fs::create_dir_all(dir)?;
-    let temporary = dir.join("args.key.tmp");
+    let temporary = dir.join(format!(
+        "args.key.{}-{}",
+        std::process::id(),
+        hex::encode(tag)
+    ));
     let mut temporary_guard = TempKeyFile {
         path: temporary.clone(),
         armed: true,
@@ -109,20 +106,35 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
         options.mode(0o600);
     }
     use std::io::Write as _;
-    let mut file = options.open(&temporary).or_else(|error| {
-        if error.kind() == std::io::ErrorKind::AlreadyExists {
-            std::fs::remove_file(&temporary).and_then(|()| options.open(&temporary))
-        } else {
-            Err(error)
-        }
-    })?;
+    let mut file = options.open(&temporary)?;
     file.write_all(&key)?;
     file.sync_all()?;
     drop(file);
-    std::fs::rename(&temporary, &path)?;
+    let linked = std::fs::hard_link(&temporary, &path);
+    let _ = std::fs::remove_file(&temporary);
     temporary_guard.armed = false;
-    sync_directory(dir);
-    Ok(key)
+    match linked {
+        Ok(()) => {
+            sync_directory(dir);
+            Ok(key)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => read_hash_key(&path),
+        Err(error) => Err(Error::Config(format!(
+            "cannot put {} in place: {error}",
+            path.display()
+        ))),
+    }
+}
+
+fn read_hash_key(path: &std::path::Path) -> Result<[u8; 32]> {
+    let bytes = std::fs::read(path)?;
+    <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+        Error::Config(format!(
+            "{} is {} bytes, not the 32-byte arguments key; restore it or remove it on purpose to start a new ledger chain",
+            path.display(),
+            bytes.len()
+        ))
+    })
 }
 
 fn sync_directory(dir: &std::path::Path) {
@@ -138,15 +150,15 @@ fn sync_directory(dir: &std::path::Path) {
 
 pub async fn call(
     ctx: &ToolContext,
-    name: &str,
+    tool_name: &str,
     arguments: Option<&Map<String, Value>>,
     cancellation: &CancellationToken,
 ) -> CallToolResult {
-    match dispatch(ctx, name, arguments, cancellation).await {
+    match dispatch(ctx, tool_name, arguments, cancellation).await {
         Ok(result) => result,
         Err(error) => {
             tracing::warn!(
-                tool = %name.chars().filter(|ch| !ch.is_control()).take(64).collect::<String>(),
+                tool = %tool_name.chars().filter(|character| !character.is_control()).take(64).collect::<String>(),
                 code = error.code(),
                 causes = ?error.causes(),
                 "tool call failed"
@@ -158,41 +170,40 @@ pub async fn call(
 
 async fn dispatch(
     ctx: &ToolContext,
-    name: &str,
+    tool_name: &str,
     arguments: Option<&Map<String, Value>>,
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
-    match name {
+    match tool_name {
         "serper_search" => {
-            execute_search_endpoint(ctx, Endpoint::Search, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Search, parse(arguments)?, cancellation).await
         }
         "serper_images" => {
-            execute_search_endpoint(ctx, Endpoint::Images, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Images, parse(arguments)?, cancellation).await
         }
         "serper_news" => {
-            execute_search_endpoint(ctx, Endpoint::News, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::News, parse(arguments)?, cancellation).await
         }
         "serper_places" => {
-            execute_search_endpoint(ctx, Endpoint::Places, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Places, parse(arguments)?, cancellation).await
         }
         "serper_maps" => {
-            execute_search_endpoint(ctx, Endpoint::Maps, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Maps, parse(arguments)?, cancellation).await
         }
         "serper_videos" => {
-            execute_search_endpoint(ctx, Endpoint::Videos, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Videos, parse(arguments)?, cancellation).await
         }
         "serper_shopping" => {
-            execute_search_endpoint(ctx, Endpoint::Shopping, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Shopping, parse(arguments)?, cancellation).await
         }
         "serper_scholar" => {
-            execute_search_endpoint(ctx, Endpoint::Scholar, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Scholar, parse(arguments)?, cancellation).await
         }
         "serper_patents" => {
-            execute_search_endpoint(ctx, Endpoint::Patents, parse(arguments)?, cancellation).await
+            search_from_args(ctx, Endpoint::Patents, parse(arguments)?, cancellation).await
         }
         "serper_autocomplete" => {
-            execute_search_endpoint(ctx, Endpoint::Autocomplete, parse(arguments)?, cancellation)
-                .await
+            search_from_args(ctx, Endpoint::Autocomplete, parse(arguments)?, cancellation).await
         }
         "serper_reviews" => reviews(ctx, parse(arguments)?, cancellation).await,
         "serper_lens" => lens(ctx, parse(arguments)?, cancellation).await,
@@ -209,11 +220,11 @@ async fn dispatch(
 }
 
 fn parse<T: DeserializeOwned>(arguments: Option<&Map<String, Value>>) -> Result<T> {
-    let value = match arguments {
+    let object = match arguments {
         Some(map) => Value::Object(map.clone()),
         None => Value::Object(Map::new()),
     };
-    serde_json::from_value(value).map_err(|error| Error::InvalidArgs(error.to_string()))
+    serde_json::from_value(object).map_err(|error| Error::InvalidArgs(error.to_string()))
 }
 
 fn reject_oversized_queries(arguments: Option<&Map<String, Value>>) -> Result<()> {
@@ -232,7 +243,7 @@ fn reject_oversized_queries(arguments: Option<&Map<String, Value>>) -> Result<()
     Ok(())
 }
 
-async fn execute_search_endpoint(
+async fn search_from_args(
     ctx: &ToolContext,
     endpoint: Endpoint,
     args: SearchArgs,
@@ -241,7 +252,7 @@ async fn execute_search_endpoint(
     let body = args.body(endpoint)?;
     let credits = endpoint.estimated_cost(args.num).get();
     let cacheable = args.tbs.is_none();
-    execute_search(
+    search_and_record(
         ctx,
         endpoint,
         body,
@@ -255,7 +266,7 @@ async fn execute_search_endpoint(
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn execute_search(
+async fn search_and_record(
     ctx: &ToolContext,
     endpoint: Endpoint,
     body: Value,
@@ -280,7 +291,7 @@ async fn execute_search(
             let raw = match ctx.client.post(endpoint, &body, cancellation).await {
                 Ok(raw) => raw,
                 Err(error) => {
-                    record_failure(
+                    append_failure(
                         ctx,
                         endpoint.tool_name(),
                         endpoint.path(),
@@ -309,23 +320,23 @@ async fn execute_search(
         let projection = project(endpoint, &raw, preset)?;
         Ok((
             projection.envelope,
-            projection.results,
+            projection.result_count,
             projection.top_title,
             projection.next_token,
         ))
     })();
-    let (envelope, results, top_title, next_token) = match prepared {
-        Ok(value) => {
+    let (envelope, result_count, top_title, next_token) = match prepared {
+        Ok(parts) => {
             if cacheable
                 && cache_age.is_none()
                 && let Err(error) = ctx.cache.put(key, Arc::clone(&raw))
             {
                 tracing::warn!(%error, "the response could not be cached");
             }
-            value
+            parts
         }
         Err(error) => {
-            record_call(
+            append_call_or_log(
                 ctx,
                 CallRecord {
                     tool: endpoint.tool_name().to_owned(),
@@ -351,7 +362,7 @@ async fn execute_search(
     let emitted = serde_json::to_vec(&fitted)?.len();
     let tokens = (emitted / 4) as u64;
     let saved = ((baseline / 4) as u64).saturating_sub(tokens);
-    record_call(
+    append_call_or_log(
         ctx,
         CallRecord {
             tool: endpoint.tool_name().to_owned(),
@@ -381,7 +392,7 @@ async fn execute_search(
         TextMode::Full => serde_json::to_string(&fitted)?,
         TextMode::Summary => {
             let mut line =
-                projection::summary_text(results, top_title.as_deref(), charged, cost.usd);
+                projection::summary_text(result_count, top_title.as_deref(), charged, cost.usd);
             if let Some(token) = next_token.as_deref() {
                 let token = crate::projection::cap(&crate::projection::sanitize(token), 64).0;
                 line.push_str(&format!("; next page token: {token}"));
@@ -397,7 +408,7 @@ async fn execute_search(
 
 struct Projection {
     envelope: Value,
-    results: usize,
+    result_count: usize,
     top_title: Option<String>,
     next_token: Option<String>,
 }
@@ -405,15 +416,15 @@ struct Projection {
 fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection> {
     let sections = projection::search_sections(raw, preset);
     let mut truncated = sections.truncated;
-    let (envelope, results, top_title) = match endpoint {
+    let (envelope, result_count, top_title) = match endpoint {
         Endpoint::Search => {
             let (items, cut) = projection::organic(raw, preset);
             truncated |= cut;
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = with_sections(Envelope::new(items, placeholder_cost()), sections)?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Images => {
@@ -422,8 +433,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::News => {
@@ -432,8 +443,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Places | Endpoint::Maps => {
@@ -442,8 +453,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Videos => {
@@ -452,8 +463,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Shopping => {
@@ -462,8 +473,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Scholar => {
@@ -472,8 +483,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Patents => {
@@ -482,8 +493,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Autocomplete => {
@@ -491,8 +502,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().map(|item| item.value.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Reviews => {
@@ -501,8 +512,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Lens => {
@@ -511,8 +522,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.title.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Locations => {
@@ -520,8 +531,8 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
             let top = items.first().and_then(|item| item.canonical_name.clone());
             let envelope = serde_json::to_value(ListOutput::new(items, placeholder_cost()))?;
             {
-                let result_count = result_count(&envelope);
-                (envelope, result_count, top)
+                let count = result_count(&envelope);
+                (envelope, count, top)
             }
         }
         Endpoint::Scrape => {
@@ -546,7 +557,7 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
     }
     Ok(Projection {
         envelope,
-        results,
+        result_count,
         top_title,
         next_token,
     })
@@ -596,7 +607,7 @@ async fn reviews(
 ) -> Result<CallToolResult> {
     let body = args.body()?;
     let credits = Endpoint::Reviews.base_cost().get();
-    execute_search(
+    search_and_record(
         ctx,
         Endpoint::Reviews,
         body,
@@ -616,7 +627,7 @@ async fn lens(
 ) -> Result<CallToolResult> {
     let body = args.body()?;
     let credits = Endpoint::Lens.base_cost().get();
-    execute_search(
+    search_and_record(
         ctx,
         Endpoint::Lens,
         body,
@@ -641,7 +652,7 @@ async fn scrape(
     let raw = match ctx.client.post(Endpoint::Scrape, &body, cancellation).await {
         Ok(raw) => raw,
         Err(error) => {
-            record_failure(
+            append_failure(
                 ctx,
                 "serper_scrape",
                 Endpoint::Scrape.path(),
@@ -668,10 +679,10 @@ async fn scrape(
         truncated: content.truncated,
         cost: placeholder_cost(),
     };
-    let mut value = serde_json::to_value(&output)?;
-    value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
-    let serialized = serde_json::to_vec(&value)?;
-    record_call(
+    let mut payload = serde_json::to_value(&output)?;
+    payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
+    let serialized = serde_json::to_vec(&payload)?;
+    append_call_or_log(
         ctx,
         CallRecord {
             tool: "serper_scrape".to_owned(),
@@ -690,11 +701,10 @@ async fn scrape(
     )
     .await;
     let cost = cost_info(ctx, actual, None)?;
-    let mut value = value;
-    set_cost(&mut value, &cost)?;
-    let value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
+    set_cost(&mut payload, &cost)?;
+    let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
-        TextMode::Full => serde_json::to_string(&value)?,
+        TextMode::Full => serde_json::to_string(&payload)?,
         TextMode::Summary => {
             let chars = output
                 .markdown
@@ -707,7 +717,7 @@ async fn scrape(
             )
         }
     };
-    Ok(tool_result(value, text))
+    Ok(tool_result(payload, text))
 }
 
 async fn locations(
@@ -724,7 +734,7 @@ async fn locations(
     let items = projection::locations(&raw);
     let top = items.first().and_then(|item| item.canonical_name.clone());
     let mut envelope = serde_json::to_value(Envelope::new(items, placeholder_cost()))?;
-    record_call(
+    append_call_or_log(
         ctx,
         CallRecord {
             tool: "serper_locations".to_owned(),
@@ -784,7 +794,7 @@ async fn batch(
     let raw = match ctx.client.post(endpoint, &body, cancellation).await {
         Ok(raw) => raw,
         Err(error) => {
-            record_failure(
+            append_failure(
                 ctx,
                 "serper_search_batch",
                 endpoint.path(),
@@ -797,12 +807,12 @@ async fn batch(
             return Err(error);
         }
     };
-    let Some(items) = raw.as_array() else {
+    let Some(responses) = raw.as_array() else {
         let error = Error::Upstream {
             status: 200,
             message: "the batch response was not an array".to_owned(),
         };
-        record_failure(
+        append_failure(
             ctx,
             "serper_search_batch",
             endpoint.path(),
@@ -815,15 +825,15 @@ async fn batch(
         return Err(error);
     };
     let preset = args.preset();
-    let entries = items
+    let entries = responses
         .iter()
-        .map(|item| {
-            let query = item
+        .map(|query_response| {
+            let query = query_response
                 .get("searchParameters")
                 .and_then(|params| params.get("q"))
                 .and_then(Value::as_str)
                 .map(crate::projection::sanitize);
-            let (results, error) = match project(endpoint, item, preset) {
+            let (results, error) = match project(endpoint, query_response, preset) {
                 Ok(projection) => (
                     projection
                         .envelope
@@ -850,10 +860,10 @@ async fn batch(
         cost: placeholder_cost(),
         truncated: false,
     };
-    let mut value = serde_json::to_value(&output)?;
-    value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
-    let serialized = serde_json::to_vec(&value)?;
-    record_call(
+    let mut payload = serde_json::to_value(&output)?;
+    payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
+    let serialized = serde_json::to_vec(&payload)?;
+    append_call_or_log(
         ctx,
         CallRecord {
             tool: "serper_search_batch".to_owned(),
@@ -872,11 +882,10 @@ async fn batch(
     )
     .await;
     let cost = cost_info(ctx, total, None)?;
-    let mut value = value;
-    set_cost(&mut value, &cost)?;
-    let value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
+    set_cost(&mut payload, &cost)?;
+    let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
-        TextMode::Full => serde_json::to_string(&value)?,
+        TextMode::Full => serde_json::to_string(&payload)?,
         TextMode::Summary => format!(
             "{} queries; cost: {} credits ({})",
             output.entries.len(),
@@ -884,21 +893,23 @@ async fn batch(
             usd_text(cost.usd)
         ),
     };
-    Ok(tool_result(value, text))
+    Ok(tool_result(payload, text))
 }
 
 async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> {
     let started = Instant::now();
-    let body = ctx.client.health().await.ok_or_else(|| Error::Upstream {
+    let health_response = ctx.client.health().await.ok_or_else(|| Error::Upstream {
         status: 503,
         message: "api.serper.dev/health did not answer".to_owned(),
     })?;
-    let status = body
+    let status = health_response
         .get("status")
         .and_then(Value::as_str)
         .map(|raw| crate::projection::cap(&crate::projection::sanitize(raw), 64).0);
-    let info = body.get("info").map(crate::projection::sanitize_value);
-    record_call(
+    let service_info = health_response
+        .get("info")
+        .map(crate::projection::sanitize_value);
+    append_call_or_log(
         ctx,
         CallRecord {
             tool: "serper_health".to_owned(),
@@ -909,7 +920,7 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
             batch_multiplier: 1,
             duration_ms: elapsed_ms(started),
             status: "ok".to_owned(),
-            response_bytes: serde_json::to_vec(&body)?.len() as u64,
+            response_bytes: serde_json::to_vec(&health_response)?.len() as u64,
             tokens: 0,
             tokens_saved: 0,
             cache_hit: false,
@@ -918,13 +929,13 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
     .await;
     let output = HealthOutput {
         status: status.clone(),
-        info,
+        info: service_info,
         cost: cost_info(ctx, 0, None)?,
     };
-    let value = serde_json::to_value(&output)?;
-    let value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
+    let payload = serde_json::to_value(&output)?;
+    let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = format!("service status: {}", status.as_deref().unwrap_or("unknown"));
-    Ok(tool_result(value, text))
+    Ok(tool_result(payload, text))
 }
 
 async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallToolResult> {
@@ -966,7 +977,7 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
         budget_remaining,
         live_balance,
     };
-    let value = serde_json::to_value(&output)?;
+    let payload = serde_json::to_value(&output)?;
     let text = format!(
         "{} calls; {} credits ({}); {} tokens, {} saved",
         output.calls,
@@ -975,7 +986,7 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
         output.tokens,
         output.tokens_saved
     );
-    Ok(tool_result(value, text))
+    Ok(tool_result(payload, text))
 }
 
 fn reserve_budget(ctx: &ToolContext, credits: u32) -> Result<Option<Reservation>> {
@@ -1000,7 +1011,7 @@ fn cost_info(ctx: &ToolContext, credits: u32, cache_age: Option<u64>) -> Result<
     let totals = ctx.ledger.totals()?;
     Ok(CostInfo {
         credits,
-        usd: usd_for(credits, ctx.settings.pack(), ctx.settings.usd_per_1k()),
+        usd: usd_for_call(credits, ctx.settings.pack(), ctx.settings.usd_per_1k()),
         session_credits: totals.credits,
         session_usd: usd_for_credits(
             totals.credits,
@@ -1026,13 +1037,13 @@ async fn append_call_record(ctx: &ToolContext, call_record: CallRecord) -> Resul
         .map_err(|error| Error::Ledger(error.to_string()))?
 }
 
-async fn record_call(ctx: &ToolContext, call_record: CallRecord) {
+async fn append_call_or_log(ctx: &ToolContext, call_record: CallRecord) {
     if let Err(error) = append_call_record(ctx, call_record).await {
         tracing::error!(%error, "a completed call could not be written to the ledger");
     }
 }
 
-async fn record_failure(
+async fn append_failure(
     ctx: &ToolContext,
     tool: &str,
     endpoint: &str,
@@ -1091,4 +1102,34 @@ fn tool_result(structured: Value, text: String) -> CallToolResult {
     let mut result = CallToolResult::structured(structured);
     result.content = vec![ContentBlock::text(text)];
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_starts_agree_on_one_arguments_key() {
+        let root = std::env::temp_dir().join(format!("ownserp-args-key-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let ledger_dir = root.join("ledger");
+        std::fs::create_dir_all(&ledger_dir).expect("ledger dir");
+        let workers: Vec<_> = (0..8)
+            .map(|_| {
+                let ledger_dir = ledger_dir.clone();
+                std::thread::spawn(move || load_hash_key(&ledger_dir))
+            })
+            .collect();
+        let keys: Vec<[u8; 32]> = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join").expect("key"))
+            .collect();
+        assert!(
+            keys.windows(2).all(|pair| pair[0] == pair[1]),
+            "every starter must end with the same key"
+        );
+        let on_disk = std::fs::read(root.join("args.key")).expect("key file");
+        assert_eq!(on_disk, keys[0].to_vec());
+        let _ = std::fs::remove_dir_all(&root);
+    }
 }

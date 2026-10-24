@@ -7,7 +7,7 @@
 
 use ownserp_core::{Overrides, SerperClient, Settings, ToolContext};
 
-mod common {
+mod contexts {
     use super::*;
 
     pub(crate) fn context(label: &str, base_url: &str, cache_ttl: u64) -> ToolContext {
@@ -40,7 +40,7 @@ mod common {
     }
 }
 
-use common::{context, context_with};
+use contexts::{context, context_with};
 use ownserp_core::call_tool;
 use ownserp_core::{AnswerBox, KnowledgeGraph, OrganicItem, PeopleAlsoAsk};
 use serde_json::{Map, Value, json};
@@ -214,7 +214,7 @@ fn result_json(result: &impl serde::Serialize) -> Value {
     serde_json::to_value(result).expect("result serializes")
 }
 
-fn code(value: &Value) -> Option<&str> {
+fn error_code(value: &Value) -> Option<&str> {
     value
         .get("structuredContent")
         .and_then(|body| body.get("code"))
@@ -315,11 +315,11 @@ async fn unknown_arguments_are_rejected_before_any_request() {
     .await;
     let value = result_json(&result);
     assert_eq!(value.get("isError"), Some(&Value::Bool(true)));
-    assert_eq!(code(&value), Some("serper.bad_request"));
+    assert_eq!(error_code(&value), Some("serper.bad_request"));
 }
 
 #[tokio::test]
-async fn upstream_auth_failure_maps_to_a_stable_code() {
+async fn upstream_auth_failure_maps_to_a_stable_error_code() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/search"))
@@ -336,7 +336,7 @@ async fn upstream_auth_failure_maps_to_a_stable_code() {
     )
     .await;
     let value = result_json(&result);
-    assert_eq!(code(&value), Some("serper.auth_failed"));
+    assert_eq!(error_code(&value), Some("serper.auth_failed"));
     let message = value
         .pointer("/structuredContent/message")
         .and_then(Value::as_str)
@@ -545,7 +545,7 @@ async fn a_disabled_batch_tool_is_refused() {
     )
     .await;
     let value = result_json(&result);
-    assert_eq!(code(&value), Some("serper.tool_not_found"));
+    assert_eq!(error_code(&value), Some("serper.tool_not_found"));
 }
 
 #[tokio::test]
@@ -579,11 +579,11 @@ async fn scraping_above_the_ceiling_is_refused_before_spending() {
     )
     .await;
     let value = result_json(&result);
-    assert_eq!(code(&value), Some("serper.budget_refused"));
+    assert_eq!(error_code(&value), Some("serper.budget_refused"));
 }
 
 #[tokio::test]
-async fn reviews_requires_exactly_one_identifier() {
+async fn the_reviews_tool_requires_exactly_one_identifier() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
@@ -600,11 +600,11 @@ async fn reviews_requires_exactly_one_identifier() {
     )
     .await;
     let value = result_json(&result);
-    assert_eq!(code(&value), Some("serper.bad_request"));
+    assert_eq!(error_code(&value), Some("serper.bad_request"));
 }
 
 #[tokio::test]
-async fn reviews_reserves_its_price_once() {
+async fn a_one_credit_call_fits_a_one_credit_budget() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/reviews"))
@@ -639,7 +639,7 @@ async fn reviews_reserves_its_price_once() {
     .await;
     let value = result_json(&result);
     assert_eq!(
-        code(&value),
+        error_code(&value),
         None,
         "a one-credit call must fit a one-credit budget"
     );
@@ -669,7 +669,10 @@ async fn a_failed_call_charges_its_estimate() {
         &CancellationToken::new(),
     )
     .await;
-    assert_eq!(code(&result_json(&failed)), Some("serper.upstream_failed"));
+    assert_eq!(
+        error_code(&result_json(&failed)),
+        Some("serper.upstream_failed")
+    );
 
     let session = call_tool(
         &ctx,
@@ -873,7 +876,7 @@ async fn a_non_json_success_body_is_an_upstream_error() {
     .await;
     let value = result_json(&result);
     assert_eq!(value.get("isError"), Some(&Value::Bool(true)));
-    assert_eq!(code(&value), Some("serper.upstream_failed"));
+    assert_eq!(error_code(&value), Some("serper.upstream_failed"));
     let message = value
         .pointer("/structuredContent/message")
         .and_then(Value::as_str)
@@ -910,11 +913,12 @@ async fn an_oversized_announced_body_is_refused_before_reading() {
 #[tokio::test]
 async fn a_scrape_larger_than_the_budget_is_trimmed_and_marked() {
     let server = MockServer::start().await;
-    let big = "word ".repeat(60_000);
+    let oversized_markdown = "word ".repeat(60_000);
     Mock::given(method("POST"))
         .and(path("/"))
         .respond_with(
-            ResponseTemplate::new(200).set_body_json(json!({"markdown": big, "credits": 2})),
+            ResponseTemplate::new(200)
+                .set_body_json(json!({"markdown": oversized_markdown, "credits": 2})),
         )
         .mount(&server)
         .await;
@@ -988,7 +992,7 @@ async fn a_rate_limit_is_not_retried() {
     )
     .await;
     let value = result_json(&result);
-    assert_eq!(code(&value), Some("serper.rate_limited"));
+    assert_eq!(error_code(&value), Some("serper.rate_limited"));
 }
 
 #[tokio::test]
@@ -1013,7 +1017,7 @@ async fn a_cancelled_call_reports_cancellation() {
     });
     let result = call_tool(&ctx, "serper_search", Some(&args), &token).await;
     let value = result_json(&result);
-    assert_eq!(code(&value), Some("serper.cancelled"));
+    assert_eq!(error_code(&value), Some("serper.cancelled"));
 }
 
 #[tokio::test]

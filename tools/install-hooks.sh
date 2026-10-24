@@ -37,12 +37,12 @@ done
 
 if [[ "$REMOVE" -eq 1 ]]; then
 	git config --unset core.hooksPath || true
-	say SUCCESS "repository hooks removed"
+	log_line SUCCESS "repository hooks removed"
 	exit 0
 fi
 
 [[ -d "$REPO/.githooks" ]] || die "the .githooks directory is missing"
 chmod +x "$REPO"/.githooks/*
 git config core.hooksPath .githooks
-say SUCCESS "repository hooks installed from .githooks"
-say INFO "pre-commit scans staged content for secrets; pre-push runs tools/verify.sh"
+log_line SUCCESS "repository hooks installed from .githooks"
+log_line INFO "pre-commit scans staged content for secrets; pre-push runs tools/verify.sh"

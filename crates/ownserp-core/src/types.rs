@@ -44,7 +44,7 @@ impl Default for QpsLimit {
 pub struct MapViewport(String);
 
 impl MapViewport {
-    pub fn as_query(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -204,7 +204,7 @@ pub enum PackTier {
 }
 
 impl PackTier {
-    pub const fn usd_per_thousand(self) -> Option<f64> {
+    pub const fn usd_per_1k(self) -> Option<f64> {
         match self {
             Self::Starter => Some(1.00),
             Self::Standard => Some(0.75),
@@ -250,7 +250,7 @@ mod tests {
     fn viewport_round_trips_the_live_form() {
         let viewport = MapViewport::try_from("@40.7504178,-73.9824837,14z".to_owned())
             .expect("valid viewport");
-        assert_eq!(viewport.as_query(), "@40.7504178,-73.9824837,14z");
+        assert_eq!(viewport.as_str(), "@40.7504178,-73.9824837,14z");
     }
 
     #[test]
@@ -280,9 +280,9 @@ mod tests {
 
     #[test]
     fn pack_rates_match_the_published_table() {
-        assert_eq!(PackTier::Starter.usd_per_thousand(), Some(1.0));
-        assert_eq!(PackTier::Ultimate.usd_per_thousand(), Some(0.3));
-        assert_eq!(PackTier::Custom.usd_per_thousand(), None);
+        assert_eq!(PackTier::Starter.usd_per_1k(), Some(1.0));
+        assert_eq!(PackTier::Ultimate.usd_per_1k(), Some(0.3));
+        assert_eq!(PackTier::Custom.usd_per_1k(), None);
         assert_eq!(PackTier::Scale.qps(), 200);
     }
 

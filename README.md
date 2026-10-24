@@ -322,9 +322,11 @@ The ledger lives at `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/sh
 ownserp audit verify
 ```
 
-On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. The file is locked while a server runs, so a second process on the same ledger refuses to start and names the lock. A partial final line left by a killed write is ignored at the next start, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
+On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
-To close a ledger without losing it, stop the server and run `ownserp audit rotate`. It verifies the chain, archives the file beside the original with a timestamp, and the next start opens a fresh chain.
+`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. The response cache and the `OWN_SERPER_QPS` ceiling stay per process: each process keeps its own cache and its own outbound request rate. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
+
+To close a ledger without losing it, run `ownserp audit rotate`. It verifies the chain and archives the file beside the original with a timestamp. Every running server opens a fresh chain on its next write.
 
 Dollar figures come from the pack tier: `starter` (default), `standard`, `scale`, `ultimate`, or `custom` with `SERPER_USD_PER_1K`.
 

@@ -24,7 +24,7 @@ const CONNECT_TIMEOUT_SECS: u64 = 5;
 #[derive(Clone)]
 pub struct SerperClient {
     http: reqwest::Client,
-    key: Option<SecretString>,
+    api_key: Option<SecretString>,
     limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     base_override: Option<Arc<str>>,
     attach_key: bool,
@@ -43,7 +43,7 @@ impl SerperClient {
         let quota = Quota::per_second(settings.qps().get());
         Ok(Self {
             http,
-            key: settings.api_key().cloned(),
+            api_key: settings.api_key().cloned(),
             limiter: Arc::new(RateLimiter::direct(quota)),
             base_override: None,
             attach_key: true,
@@ -67,8 +67,8 @@ impl SerperClient {
         Ok(client)
     }
 
-    pub fn has_key(&self) -> bool {
-        self.key.is_some()
+    pub fn has_api_key(&self) -> bool {
+        self.api_key.is_some()
     }
 
     fn base_for(&self, host: Host) -> String {
@@ -96,9 +96,9 @@ impl SerperClient {
                 .header(CONTENT_TYPE, "application/json")
                 .body(bytes.clone());
             if self.attach_key
-                && let Some(key) = &self.key
+                && let Some(api_key) = &self.api_key
             {
-                request = request.header("X-API-KEY", key.expose_secret());
+                request = request.header("X-API-KEY", api_key.expose_secret());
             }
             request
         })
@@ -124,9 +124,9 @@ impl SerperClient {
             let mut request = self.http.get(url.clone());
             if requires_key
                 && self.attach_key
-                && let Some(key) = &self.key
+                && let Some(api_key) = &self.api_key
             {
-                request = request.header("X-API-KEY", key.expose_secret());
+                request = request.header("X-API-KEY", api_key.expose_secret());
             }
             request
         })
@@ -151,13 +151,13 @@ impl SerperClient {
     }
 
     pub async fn live_balance(&self) -> Option<u64> {
-        let key = self.key.as_ref().filter(|_| self.attach_key)?;
+        let api_key = self.api_key.as_ref().filter(|_| self.attach_key)?;
         let url = format!("{}/account", self.base_for(Host::Google));
         wait_for_permit(&self.limiter).await?;
         let response = self
             .http
             .get(&url)
-            .header("X-API-KEY", key.expose_secret())
+            .header("X-API-KEY", api_key.expose_secret())
             .timeout(Duration::from_secs(5))
             .send()
             .await
@@ -172,7 +172,11 @@ impl SerperClient {
             .and_then(Value::as_u64)
     }
 
-    async fn send_with_retry<F>(&self, cancellation: &CancellationToken, make: F) -> Result<Value>
+    async fn send_with_retry<F>(
+        &self,
+        cancellation: &CancellationToken,
+        build_request: F,
+    ) -> Result<Value>
     where
         F: Fn() -> reqwest::RequestBuilder,
     {
@@ -181,7 +185,7 @@ impl SerperClient {
             attempt = attempt.saturating_add(1);
             self.acquire(cancellation).await?;
             let sent = tokio::select! {
-                result = make().send() => result,
+                result = build_request().send() => result,
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
             };
             match sent {
