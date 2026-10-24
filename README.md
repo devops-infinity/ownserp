@@ -87,10 +87,11 @@ The archive also carries `ownserp.bash`, `_ownserp` for zsh, `ownserp.fish`, and
 ```sh
 docker run --rm -p 127.0.0.1:8777:8777 \
   -e SERPER_API_KEY -e OWN_SERPER_BEARER_TOKENS \
+  -e OWN_SERPER_ALLOWED_HOSTS=127.0.0.1,localhost \
   ghcr.io/devops-infinity/ownserp:latest
 ```
 
-The image serves Streamable HTTP and refuses a public bind without a bearer token, so both variables are required. The package is public, so `docker pull` needs no login.
+The image serves Streamable HTTP and refuses a public bind without a bearer token, so both variables are required. `OWN_SERPER_ALLOWED_HOSTS` must name every Host a client sends, because the image binds `0.0.0.0` and the allowlist derived from that address matches no real Host; add the public hostname, or the name the proxy sends, to the same list. The package is public, so `docker pull` needs no login.
 
 ### Windows
 
