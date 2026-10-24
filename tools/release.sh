@@ -195,7 +195,7 @@ package() {
 		fi
 		say SUCCESS "created tag v$CURRENT (not pushed)"
 	fi
-	say INFO "publish with: gh release create v$CURRENT \"$archive\" \"$archive.sha256\" --title \"ownserp $CURRENT\""
+	say INFO "publish with: gh release create v$CURRENT \"$archive\" \"$archive.sha256\" --title \"OwnSERP $CURRENT\""
 }
 
 case "$MODE" in
