@@ -95,7 +95,7 @@ Set `TARGET` to `aarch64-apple-darwin` or `x86_64-apple-darwin` on macOS, `aarch
 
 The binary prints its shell completions and manual page on demand with `ownserp completions <shell>` and `ownserp man`. Install them where your shell and manual reader look, under `~/.local/share/bash-completion/completions/`, a directory on `fpath`, `~/.config/fish/completions/`, and `~/.local/share/man/man1/`.
 
-Each release signs `sha256.sum` with minisign. To check a download, verify the signature against the public key in this repository, then check the archive against the file:
+When the `MINISIGN_KEY` repository secret is configured, each release signs `sha256.sum` with minisign. To check a download, verify the signature against the public key in this repository, then check the archive against the file:
 
 ```sh
 minisign -Vm sha256.sum -P RWSPyQWAsXwP5vjgAFI/PAAtbFAd5tA4BlhyFrT+MCPNmE2J+jgT26kC
@@ -413,7 +413,9 @@ cargo install --path crates/ownserp --locked
 tools/verify.sh
 ```
 
-`tools/verify.sh` runs the whole gate locally, with no hosted pipeline: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
+`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
+
+The release build itself runs in `.github/workflows/release.yml` on a macOS runner when a `v*` tag is pushed.
 
 The local lifecycle:
 

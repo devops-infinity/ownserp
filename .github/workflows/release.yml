@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build, for example v1.2.0"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    timeout-minutes: 60
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install Rust and the target toolchains
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal
+          rustup target add --toolchain 1.99.1 \
+            aarch64-apple-darwin \
+            x86_64-apple-darwin \
+            aarch64-unknown-linux-gnu \
+            aarch64-unknown-linux-musl \
+            x86_64-unknown-linux-musl \
+            x86_64-unknown-linux-gnu \
+            x86_64-pc-windows-gnu
+
+      - name: Install the release tools
+        run: |
+          cargo install --locked cargo-dist --version 0.32.0
+          cargo install --locked cargo-zigbuild --version 0.24.0
+          brew install zig
+
+      - name: Build every target
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          mkdir -p target/distrib target/dist-manifests
+          dist plan --tag="$TAG" --output-format=json > "$RUNNER_TEMP/dist-plan.json"
+          jq -r '.ci.github.artifacts_matrix.include[].targets[]' "$RUNNER_TEMP/dist-plan.json" | sort -u > "$RUNNER_TEMP/targets.txt"
+          while IFS= read -r target; do
+            echo "building $target"
+            dist build --tag="$TAG" --artifacts=local --target="$target" --no-local-paths --output-format=json > "target/dist-manifests/$target.json"
+            cp "target/dist-manifests/$target.json" "target/distrib/$target-dist-manifest.json"
+          done < "$RUNNER_TEMP/targets.txt"
+          dist build --tag="$TAG" --artifacts=global --no-local-paths
+          mkdir -p dist
+          find target/distrib -maxdepth 1 -type f -exec cp -p {} dist/ \;
+
+      - name: Build the MCPB bundle
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          TMP="$RUNNER_TEMP/mcpb"
+          rm -rf "$TMP"
+          mkdir -p "$TMP/server"
+          cp mcpb/manifest.json "$TMP/manifest.json"
+          tar -xzf "dist/ownserp-x86_64-unknown-linux-gnu.tar.gz" -C "$TMP"
+          install -m 0755 "$TMP/ownserp-x86_64-unknown-linux-gnu/ownserp" "$TMP/server/ownserp"
+          (cd "$TMP" && zip -qr "$GITHUB_WORKSPACE/dist/ownserp-$VERSION.mcpb" manifest.json server)
+          HASH="$(shasum -a 256 "dist/ownserp-$VERSION.mcpb" | awk '{print $1}')"
+          printf '%s  %s\n' "$HASH" "ownserp-$VERSION.mcpb" > "dist/ownserp-$VERSION.mcpb.sha256"
+
+      - name: Sign the checksums
+        env:
+          MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
+        run: |
+          if [ -z "$MINISIGN_KEY" ]; then
+            echo "MINISIGN_KEY is not set; sha256.sum stays unsigned"
+            exit 0
+          fi
+          mkdir -p "$HOME/.minisign"
+          printf '%s\n' "$MINISIGN_KEY" > "$HOME/.minisign/minisign.key"
+          chmod 600 "$HOME/.minisign/minisign.key"
+          brew install minisign
+          minisign -Sm dist/sha256.sum -s "$HOME/.minisign/minisign.key"
+          cp minisign.pub dist/minisign.pub
+
+      - name: Create or update the release
+        run: |
+          TAG="${{ inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          NOTES="$RUNNER_TEMP/notes.md"
+          sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d' > "$NOTES"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create "$TAG" dist/* --title "OwnSERP $VERSION" --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
+          fi
