@@ -60,11 +60,6 @@ else
 	skip_check "shell tests" "bats is not installed, so the shell tests were skipped"
 fi
 run_check "shfmt" "run: shfmt -w tools" shfmt -d "${SHELL_FILES[@]}"
-if command -v node >/dev/null 2>&1; then
-	run_check "npm loader syntax" "fix the JavaScript error" node --check packages/npm/bin/ownserp.js
-else
-	skip_check "npm loader syntax" "node is not installed, so the npm loader was not syntax checked"
-fi
 run_check "formatting" "run: cargo fmt --all" cargo fmt --all -- --check
 run_check "check" "cargo check failed" cargo check --workspace --all-targets --all-features --locked --color=never
 run_check "lint" "clippy found problems" cargo clippy --workspace --all-targets --all-features --locked --color=never -- -D warnings

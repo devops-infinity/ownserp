@@ -104,3 +104,22 @@ strip = "symbols"
 inherits = "dev"
 debug-assertions = true
 overflow-checks = true
+
+[workspace.metadata.dist]
+cargo-dist-version = "0.32.0"
+ci = ["github"]
+allow-dirty = ["ci"]
+installers = ["shell", "powershell", "homebrew", "npm"]
+publish-jobs = ["homebrew"]
+tap = "devops-infinity/homebrew-tap"
+npm-scope = "@devops-infinity"
+unix-archive = ".tar.gz"
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "x86_64-pc-windows-gnu",
+]

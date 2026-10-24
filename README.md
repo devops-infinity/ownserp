@@ -39,16 +39,16 @@ The server is one binary and needs no language runtime. It speaks MCP revision 2
 
 ## Requirements
 
-- To run a published binary: no runtime, no toolchain. Linux x86_64 is the published binary platform.
+- To run a published binary: no runtime, no toolchain. Prebuilt binaries cover macOS, Linux, and Windows.
 - To build from source: Rust 1.89 or newer, pinned to 1.99.1 in `rust-toolchain.toml`.
 - A Serper.dev account and API key from https://serper.dev/api-keys.
 - A client that speaks MCP over stdio, or any HTTP client for the Streamable HTTP transport.
 
 ## Installation
 
-npm and Homebrew run on Linux x86_64. npm needs Node 18 or newer. The Homebrew formula builds from source on macOS.
+Every install path uses a prebuilt binary: no Rust toolchain and no compile step.
 
-Release archives cover Linux x86_64 with glibc, Linux x86_64 with static musl, Linux ARM64, and Windows x86_64. macOS builds from source.
+Release archives cover macOS ARM64 and x86_64, Linux x86_64 with glibc, Linux ARM64 with glibc, Linux x86_64 and ARM64 with static musl, and Windows x86_64.
 
 ### npm
 
@@ -56,7 +56,7 @@ Release archives cover Linux x86_64 with glibc, Linux x86_64 with static musl, L
 npx @devops-infinity/ownserp serve
 ```
 
-The package downloads the matching release archive on first run, checks it against the published SHA-256, and starts the binary.
+The package downloads the archive for the current platform on install, checks it against the release checksum, and runs the binary. Node 18 or newer.
 
 ### Homebrew
 
@@ -64,23 +64,43 @@ The package downloads the matching release archive on first run, checks it again
 brew install devops-infinity/tap/ownserp
 ```
 
-Linux installs the release binary. macOS builds from source through the formula.
+macOS and Linux both install the release binary.
+
+### Shell installer
+
+```sh
+curl --proto '=https' --tlsv1.2 -LsSf https://github.com/devops-infinity/ownserp/releases/latest/download/ownserp-installer.sh | sh
+```
+
+On Windows, in PowerShell:
+
+```powershell
+powershell -ExecutionPolicy Bypass -c "irm https://github.com/devops-infinity/ownserp/releases/latest/download/ownserp-installer.ps1 | iex"
+```
 
 ### Release archive
 
 ```sh
 VERSION=1.1.0
 BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
-curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
-curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
-sha256sum -c "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
-tar -xzf "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
-install -m 0755 ownserp ~/.local/bin/ownserp
+TARGET=x86_64-unknown-linux-gnu
+curl -LO "$BASE/ownserp-$TARGET.tar.gz"
+curl -LO "$BASE/ownserp-$TARGET.tar.gz.sha256"
+sha256sum -c "ownserp-$TARGET.tar.gz.sha256"
+tar -xzf "ownserp-$TARGET.tar.gz"
+install -m 0755 "ownserp-$TARGET/ownserp" ~/.local/bin/ownserp
 ```
 
-Replace the target in both file names with `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, or `x86_64-pc-windows-gnu` for those platforms.
+Set `TARGET` to `aarch64-apple-darwin` or `x86_64-apple-darwin` on macOS, `aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` on those platforms, and use the `.zip` file with `x86_64-pc-windows-gnu` on Windows.
 
-The archive also carries `ownserp.bash`, `_ownserp` for zsh, `ownserp.fish`, and `ownserp.1`. Install them where your shell and manual reader look, under `~/.local/share/bash-completion/completions/`, a directory on `fpath`, `~/.config/fish/completions/`, and `~/.local/share/man/man1/`. You can print them on demand with `ownserp completions <shell>` and `ownserp man`.
+The binary prints its shell completions and manual page on demand with `ownserp completions <shell>` and `ownserp man`. Install them where your shell and manual reader look, under `~/.local/share/bash-completion/completions/`, a directory on `fpath`, `~/.config/fish/completions/`, and `~/.local/share/man/man1/`.
+
+Each release signs `sha256.sum` with minisign. To check a download, verify the signature against the public key in this repository, then check the archive against the file:
+
+```sh
+minisign -Vm sha256.sum -P RWSPyQWAsXwP5vjgAFI/PAAtbFAd5tA4BlhyFrT+MCPNmE2J+jgT26kC
+grep "ownserp-x86_64-unknown-linux-gnu.tar.gz" sha256.sum | sha256sum --check
+```
 
 ### Container
 
@@ -95,7 +115,7 @@ The image serves Streamable HTTP and refuses a public bind without a bearer toke
 
 ### Windows
 
-Download `ownserp-<version>-x86_64-pc-windows-gnu.tar.gz` from the release page, extract `ownserp.exe`, and put the folder on your PATH. A client configuration that cannot resolve the name uses the absolute path to `ownserp.exe`.
+Use the PowerShell installer above, or download `ownserp-x86_64-pc-windows-gnu.zip` from the release page, extract `ownserp.exe`, and put the folder on your PATH. A client configuration that cannot resolve the name uses the absolute path to `ownserp.exe`.
 
 ### MCPB bundle
 
@@ -152,7 +172,7 @@ Add this to `claude_desktop_config.json`, at `~/Library/Application Support/Clau
 }
 ```
 
-The npm package covers Linux x86_64. On macOS and Windows, build from source and point `command` at that binary.
+The npm package installs the prebuilt binary for the current platform. Point `command` at `ownserp` when the client inherits your PATH, or at the absolute path `command -v ownserp` prints when it does not.
 
 ### OpenAI Codex CLI
 
@@ -411,7 +431,7 @@ The local lifecycle:
 - npm: `@devops-infinity/ownserp`.
 - Homebrew tap: `devops-infinity/tap`.
 - MCP Registry: `io.github.devops-infinity/ownserp`.
-- GitHub releases: archives for Linux x86_64 with glibc, Linux x86_64 with static musl, Linux ARM64, and Windows x86_64, each with a checksum, and a Linux MCPB bundle.
+- GitHub releases: archives for macOS ARM64 and x86_64, Linux x86_64 and ARM64 with glibc, Linux x86_64 and ARM64 with static musl, and Windows x86_64, each with a checksum, plus a shell installer, a PowerShell installer, and a Linux MCPB bundle.
 - Container image: `ghcr.io/devops-infinity/ownserp`, public.
 - Manifests in this repository: `server.json`, `mcpb/manifest.json`, and `Dockerfile`.
 

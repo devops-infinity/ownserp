@@ -35,22 +35,19 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
 
   --prepare        set the next version in Cargo.toml, the ownserp-core
                    requirement, Cargo.lock, server.json, mcpb/manifest.json,
-                   the npm package and loader, the Dockerfile label, and the
-                   README install snippet, and add the CHANGELOG heading.
-                   The diff is left in the working tree for review.
-  --package        require a clean tree, run tools/verify.sh, build the host
-                   binary plus the aarch64, musl, and Windows targets, write
-                   one archive and sha256 file per target, add shell
-                   completions, the manual page, and the MCPB bundle, install
-                   the host binary into ~/.local/bin (override with
-                   OWN_SERPER_INSTALL_DIR), and stamp the
-                   x86_64-unknown-linux-gnu archive digest into the npm
-                   loader, which is the target it downloads. Commit that
-                   stamp before tagging.
-                   Needs cargo-zigbuild, zig, and zip.
-  --tag            require a clean tree and an archive whose digest the npm
-                   loader already pins, then create vX.Y.Z at HEAD (signed
-                   when user.signingkey is set); never pushed
+                   the Dockerfile label, and the README install snippet, and
+                   add the CHANGELOG heading. The diff is left in the working
+                   tree for review.
+  --package        require a clean tree, run tools/verify.sh, build every
+                   cargo-dist target this host supports, write the archives,
+                   installers, Homebrew formula, and npm package under dist/,
+                   build the MCPB bundle, and install the host binary into
+                   ~/.local/bin (override with OWN_SERPER_INSTALL_DIR).
+                   Run this on macOS to include the two Darwin targets.
+                   Needs cargo-dist, cargo-zigbuild, zig, and zip.
+  --tag            require a clean tree and a packaged dist/ directory, then
+                   create vX.Y.Z at HEAD (signed when user.signingkey is set);
+                   never pushed
   --patch          bump the patch number (with --prepare)
   --minor          bump the minor number (with --prepare)
   --major          bump the major number (with --prepare)
@@ -61,7 +58,7 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
 Release order on this machine:
   1. tools/release.sh --prepare --patch, then edit CHANGELOG.md
   2. commit the bump on a release branch and merge it into main
-  3. tools/release.sh --package, then commit the npm loader stamp and merge
+  3. tools/release.sh --package on macOS, so the two Darwin targets are built
   4. tools/release.sh --tag, then push the tag and publish
 USAGE
 }
@@ -111,7 +108,7 @@ done
 	usage
 	die "choose --prepare, --package, or --tag"
 }
-[[ "$MODE" == "package" && "$MAKE_TAG" -eq 1 ]] && die "--tag runs after --package; run --package, commit the loader stamp, then --tag"
+[[ "$MODE" == "package" && "$MAKE_TAG" -eq 1 ]] && die "--tag runs after --package; run --package, then --tag"
 require_tool cargo "install Rust from https://rustup.rs"
 require_tool jq "run: brew install jq"
 
@@ -177,7 +174,7 @@ prepare() {
 	date="$(date +%F)"
 	say INFO "preparing $CURRENT -> $new"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would set the version in Cargo.toml, the ownserp-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the npm package and loader, the Dockerfile label, and the README install snippet"
+		say INFO "dry run: would set the version in Cargo.toml, the ownserp-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the Dockerfile label, and the README install snippet"
 		say INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
 		return 0
 	fi
@@ -189,11 +186,6 @@ prepare() {
 		sed -i.bak "s/org.opencontainers.image.version=\"[0-9.]*\"/org.opencontainers.image.version=\"$new\"/" Dockerfile
 		rm -f Dockerfile.bak
 	fi
-	if [[ -f packages/npm/package.json ]]; then
-		set_manifest_version packages/npm/package.json "$new"
-		sed -i.bak "s/^const VERSION = \".*\";/const VERSION = \"$new\";/" packages/npm/bin/ownserp.js
-		rm -f packages/npm/bin/ownserp.js.bak
-	fi
 	insert_changelog_heading "$new" "$date"
 	verify_version_stamps "$REPO" "$new"
 	say SUCCESS "prepared $new"
@@ -201,118 +193,95 @@ prepare() {
 }
 
 package() {
-	local host stage extra archive digest loader target binary loader_archive
+	local host target archive stage install_dir bundle tmpstage manifests
+	local -a targets=() built=() skipped=()
 	require_clean_tree
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before packaging"
 	host="$(host_target)"
-	archive="$DIST_DIR/ownserp-$CURRENT-$host.tar.gz"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would run tools/verify.sh, build $host plus the cross targets, and write one archive per target under $DIST_DIR"
+		say INFO "dry run: would run tools/verify.sh, build every cargo-dist target this host supports, and write the archives, installers, formula, and npm package under $DIST_DIR"
 		return 0
 	fi
 	OWN_SERPER_STRICT_GATE=1 "$REPO/tools/verify.sh"
+	require_tool dist "run: cargo install --locked cargo-dist --version 0.32.0"
 	require_tool cargo-zigbuild "run: cargo install --locked cargo-zigbuild"
 	require_tool zig "run: brew install zig"
-	mkdir -p "$DIST_DIR"
-	STAGE="$(mktemp -d)"
-	extra="$STAGE/extra"
-	mkdir "$extra"
-	cargo build --profile dist --locked --bin ownserp
-	install -m 0755 target/dist/ownserp "$extra/ownserp"
-	"$extra/ownserp" completions bash >"$extra/ownserp.bash"
-	"$extra/ownserp" completions zsh >"$extra/_ownserp"
-	"$extra/ownserp" completions fish >"$extra/ownserp.fish"
-	"$extra/ownserp" man >"$extra/ownserp.1"
-	rm -f "$extra/ownserp"
-	local -a targets=("$host")
-	for target in aarch64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-gnu; do
-		[[ "$target" == "$host" ]] || targets+=("$target")
-	done
+	while IFS= read -r target; do
+		[[ -n "$target" ]] && targets+=("$target")
+	done < <(dist plan --tag="v$CURRENT" --output-format=json | jq -r '.ci.github.artifacts_matrix.include[].targets[]' | sort -u)
+	[[ ${#targets[@]} -gt 0 ]] || die "dist plan returned no targets"
+	rm -rf -- "$DIST_DIR" target/distrib target/dist-manifests
+	mkdir -p "$DIST_DIR" target/distrib target/dist-manifests
+	manifests="$REPO/target/dist-manifests"
 	for target in "${targets[@]}"; do
-		if [[ "$target" == "$host" ]]; then
-			binary="target/dist/ownserp"
-			if [[ "$host" == *windows* ]]; then
-				binary="$binary.exe"
-			fi
-		elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
-			cargo zigbuild --target "$target.2.28" --profile dist --locked --bin ownserp
-			binary="target/$target/dist/ownserp"
-		else
-			cargo zigbuild --target "$target" --profile dist --locked --bin ownserp
-			if [[ "$target" == "x86_64-pc-windows-gnu" ]]; then
-				binary="target/$target/dist/ownserp.exe"
-			else
-				binary="target/$target/dist/ownserp"
-			fi
+		if [[ "$target" == *-apple-darwin && "$host" != *-apple-darwin && -z "${SDKROOT:-}" ]]; then
+			skipped+=("$target")
+			say WARNING "$target needs macOS or an Apple SDK; build it on the Mac"
+			continue
 		fi
-		[[ -x "$binary" ]] || die "the build did not produce $binary"
-		stage="$STAGE/$target"
-		mkdir -p "$stage"
-		if [[ "$target" == "x86_64-pc-windows-gnu" ]]; then
-			install -m 0755 "$binary" "$stage/ownserp.exe"
+		if dist build --tag="v$CURRENT" --artifacts=local --target="$target" --no-local-paths --output-format=json >"$manifests/$target.json"; then
+			cp "$manifests/$target.json" "target/distrib/$target-dist-manifest.json"
+			built+=("$target")
+			say SUCCESS "built $target"
 		else
-			install -m 0755 "$binary" "$stage/ownserp"
+			die "$target failed to build"
 		fi
-		cp "$extra"/* "$stage/"
-		cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE server.json "$stage/"
-		archive="$DIST_DIR/ownserp-$CURRENT-$target.tar.gz"
-		tar -czf "$archive" -C "$stage" .
-		sha256_line_of "$archive" >"$archive.sha256"
-		say SUCCESS "wrote $archive"
-		say SUCCESS "wrote $archive.sha256"
 	done
-	archive="$DIST_DIR/ownserp-$CURRENT-$host.tar.gz"
-	loader_archive="$DIST_DIR/ownserp-$CURRENT-x86_64-unknown-linux-gnu.tar.gz"
-	[[ -f "$loader_archive" ]] || die "missing $loader_archive; the npm loader downloads that target"
-	stage="$STAGE/smoke"
-	mkdir -p "$stage"
-	tar -xzf "$archive" -C "$stage"
-	"$stage/ownserp" --version >/dev/null
-	say SUCCESS "the host archive unpacks and its binary runs"
-	local install_dir="${OWN_SERPER_INSTALL_DIR:-$HOME/.local/bin}"
-	if [[ "$host" != *windows* ]]; then
-		mkdir -p "$install_dir"
-		install -m 0755 target/dist/ownserp "$install_dir/.ownserp.new"
-		mv -f "$install_dir/.ownserp.new" "$install_dir/ownserp"
-		say SUCCESS "installed $("$install_dir/ownserp" --version) to $install_dir/ownserp"
+	[[ ${#built[@]} -gt 0 ]] || die "no target built"
+	dist build --tag="v$CURRENT" --artifacts=global --no-local-paths
+	find target/distrib -maxdepth 1 -type f -exec cp -p {} "$DIST_DIR"/ \;
+	[[ -f "$DIST_DIR/sha256.sum" ]] || die "missing $DIST_DIR/sha256.sum; dist did not produce the installer checksums"
+	if command -v minisign >/dev/null 2>&1 && [[ -f "${HOME}/.minisign/minisign.key" ]]; then
+		minisign -Sm "$DIST_DIR/sha256.sum" -s "${HOME}/.minisign/minisign.key" >/dev/null
+		cp "${HOME}/.minisign/minisign.pub" "$DIST_DIR/minisign.pub" 2>/dev/null || cp "$REPO/minisign.pub" "$DIST_DIR/minisign.pub"
+		say SUCCESS "signed sha256.sum with minisign"
+	else
+		say WARNING "minisign or ~/.minisign/minisign.key is missing; sha256.sum is unsigned"
 	fi
-	[[ "$host" == *linux* ]] || die "the MCPB bundle needs a Linux host to build"
+	if ((${#skipped[@]})); then
+		say WARNING "skipped targets: ${skipped[*]}"
+		say WARNING "the installers and formula still name every target; build the skipped ones on a macOS host before publishing"
+		if [[ "${OWN_SERPER_ALLOW_PARTIAL:-0}" != "1" ]]; then
+			die "built ${#built[@]} of ${#targets[@]} targets; run --package on macOS for the Darwin targets, or set OWN_SERPER_ALLOW_PARTIAL=1 to publish this partial set on purpose"
+		fi
+	fi
 	require_tool zip "run: brew install zip"
-	local bundle="$DIST_DIR/ownserp-$CURRENT.mcpb"
-	local bundle_stage="$STAGE/bundle"
-	mkdir -p "$bundle_stage/server"
-	cp mcpb/manifest.json "$bundle_stage/manifest.json"
-	install -m 0755 target/dist/ownserp "$bundle_stage/server/ownserp"
-	(cd "$bundle_stage" && zip -qr "$bundle" manifest.json server)
+	archive="$DIST_DIR/ownserp-x86_64-unknown-linux-gnu.tar.gz"
+	[[ -f "$archive" ]] || die "missing $archive; the MCPB bundle needs the Linux x86_64 build"
+	stage="$REPO/target/package-stage"
+	rm -rf "$stage"
+	mkdir -p "$stage/unpack" "$stage/bundle/server"
+	tar -xzf "$archive" -C "$stage/unpack"
+	install -m 0755 "$stage/unpack/ownserp-x86_64-unknown-linux-gnu/ownserp" "$stage/bundle/server/ownserp"
+	cp mcpb/manifest.json "$stage/bundle/manifest.json"
+	bundle="$DIST_DIR/ownserp-$CURRENT.mcpb"
+	(cd "$stage/bundle" && zip -qr "$bundle" manifest.json server)
 	sha256_line_of "$bundle" >"$bundle.sha256"
 	say SUCCESS "wrote $bundle"
-	say SUCCESS "wrote $bundle.sha256"
-	loader="$REPO/packages/npm/bin/ownserp.js"
-	digest="$(sha256_of "$loader_archive")"
-	if [[ -f "$loader" ]] && ! grep -qF "const DIGEST = \"$digest\";" "$loader"; then
-		sed "s/^const DIGEST = \".*\";/const DIGEST = \"$digest\";/" "$loader" >"$loader.tmp"
-		mv "$loader.tmp" "$loader"
-		grep -qF "const DIGEST = \"$digest\";" "$loader" || die "the npm loader did not take the digest; check its DIGEST line"
-		say INFO "the npm loader now pins $digest; commit it and merge before --tag"
+	archive="$DIST_DIR/ownserp-$host.tar.gz"
+	if [[ "$host" != *windows* && -f "$archive" ]]; then
+		install_dir="${OWN_SERPER_INSTALL_DIR:-$HOME/.local/bin}"
+		tmpstage="$stage/install"
+		mkdir -p "$tmpstage"
+		tar -xzf "$archive" -C "$tmpstage"
+		mkdir -p "$install_dir"
+		install -m 0755 "$tmpstage/ownserp-$host/ownserp" "$install_dir/.ownserp.new"
+		mv -f "$install_dir/.ownserp.new" "$install_dir/ownserp"
+		say SUCCESS "installed $("$install_dir/ownserp" --version) to $install_dir/ownserp"
 	else
-		say SUCCESS "the npm loader already pins $digest"
+		say WARNING "no host archive for $host; the local binary was not replaced"
 	fi
-	say INFO "next: commit the loader stamp, merge it, then run tools/release.sh --tag"
+	[[ -f "$DIST_DIR/ownserp.rb" ]] && say INFO "the Homebrew formula is $DIST_DIR/ownserp.rb"
+	say INFO "next: run tools/release.sh --tag, then publish the files under $DIST_DIR"
 }
 
 tag_release() {
 	require_clean_tree
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before tagging"
-	local digest loader="$REPO/packages/npm/bin/ownserp.js"
-	local loader_archive="$DIST_DIR/ownserp-$CURRENT-x86_64-unknown-linux-gnu.tar.gz"
-	[[ -f "$loader_archive" ]] || die "missing $loader_archive; run tools/release.sh --package first"
-	digest="$(sha256_of "$loader_archive")"
-	if [[ -f "$loader" ]] && ! grep -qF "const DIGEST = \"$digest\";" "$loader"; then
-		die "the npm loader does not pin $digest; commit the loader stamp from --package before tagging"
-	fi
+	[[ -f "$DIST_DIR/sha256.sum" ]] || die "missing $DIST_DIR/sha256.sum; run tools/release.sh --package first"
 	git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would create v$CURRENT at HEAD with $loader_archive"
+		say INFO "dry run: would create v$CURRENT at HEAD with the files under $DIST_DIR"
 		return 0
 	fi
 	if [[ -n "$(git config user.signingkey || true)" ]]; then
@@ -321,7 +290,7 @@ tag_release() {
 		git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
 	fi
 	say SUCCESS "created tag v$CURRENT (not pushed)"
-	say INFO "publish with: gh release create v$CURRENT dist/ownserp-$CURRENT-* dist/ownserp-$CURRENT.mcpb* --title \"OwnSERP $CURRENT\""
+	say INFO "publish with: gh release create v$CURRENT \"$DIST_DIR\"/* --title \"OwnSERP $CURRENT\" --notes-file <(sed -n '/## \\[$CURRENT\\]/,/^## \\[/p' CHANGELOG.md | head -n -1)"
 }
 
 case "$MODE" in

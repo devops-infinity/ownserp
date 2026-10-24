@@ -26,6 +26,10 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Changed
+
+- Release packaging moved to cargo-dist: prebuilt archives for macOS, Linux, and Windows, shell and PowerShell installers, a Homebrew formula that installs the binary, and an npm package that selects the platform archive.
+
 ## [1.0.0] - 2026-10-24
 
 ### Added
