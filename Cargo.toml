@@ -1,0 +1,102 @@
+[workspace]
+members = ["crates/ownserp", "crates/ownserp-core"]
+resolver = "3"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.89"
+license = "MIT OR Apache-2.0"
+authors = ["Md. Sazzad Hossain Sharkar <sazzad@devops.bd>"]
+repository = "https://github.com/devops-infinity/ownserp"
+homepage = "https://github.com/devops-infinity/ownserp"
+keywords = ["mcp", "serper", "search", "model-context-protocol"]
+categories = ["command-line-utilities", "web-programming"]
+
+[workspace.dependencies]
+rmcp = { version = "3.7.0", default-features = false, features = [
+    "server",
+    "transport-io",
+    "transport-streamable-http-server",
+    "request-state",
+    "schemars",
+] }
+schemars = "1.2.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+tokio = { version = "1.54.1", features = [
+    "rt",
+    "rt-multi-thread",
+    "macros",
+    "time",
+    "fs",
+    "signal",
+    "sync",
+    "io-util",
+    "net",
+] }
+tokio-util = { version = "0.7.20", features = ["rt"] }
+reqwest = { version = "0.13.5", default-features = false, features = [
+    "json",
+    "rustls-no-provider",
+    "gzip",
+    "brotli",
+    "system-proxy",
+] }
+axum = "0.8.9"
+governor = "0.10.4"
+secrecy = "0.10.3"
+keyring = { version = "4.2.0", default-features = false, features = [
+    "v1",
+    "zbus-secret-service-keyring-store",
+] }
+thiserror = "2.0.21"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+clap = { version = "4.6.7", features = ["derive", "env", "wrap_help"] }
+anyhow = "1.0.104"
+sha2 = "0.11.1"
+hex = "0.4.3"
+url = "2.5.8"
+toml = "1.1.8"
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+insta = { version = "1.49.0", features = ["json"] }
+wiremock = "0.6.5"
+proptest = "1.12.0"
+tower = "0.5.3"
+hmac = "0.13.0"
+getrandom = "0.4.3"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+unreachable_pub = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[profile.release]
+lto = "thin"
+codegen-units = 16
+overflow-checks = true
+strip = "debuginfo"
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+
+[profile.checked]
+inherits = "dev"
+debug-assertions = true
+overflow-checks = true

@@ -1,0 +1,37 @@
+[advisories]
+version = 2
+yanked = "deny"
+ignore = [
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is flagged unmaintained, not vulnerable; it reaches the tree only through the Secret Service keychain store, and the alternatives lose the key at logout or need libdbus at build time. Recheck at the next dependency refresh, by 2027-01-31." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is flagged unmaintained, not vulnerable; same path and same review date as RUSTSEC-2026-0370." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is flagged unmaintained, not vulnerable; same path and same review date as RUSTSEC-2026-0370." },
+]
+
+[licenses]
+version = 2
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "CDLA-Permissive-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+deny = [
+    { name = "async-std", reason = "RUSTSEC-2025-0052 marks it discontinued" },
+    { name = "paste", reason = "RUSTSEC-2024-0436, unmaintained; use pastey" },
+    { name = "proc-macro-error", reason = "RUSTSEC-2024-0370, unmaintained" },
+    { name = "proc-macro-error2", reason = "RUSTSEC-2026-0173, unmaintained" },
+]
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

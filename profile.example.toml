@@ -1,0 +1,10 @@
+pack = "starter"
+usd_per_1k = 1.0
+qps = 50
+cache_ttl_secs = 0
+cache_max_bytes = 16777216
+enable_batch = false
+http = false
+bind = "127.0.0.1:8777"
+request_timeout_secs = 30
+http_qps = 0

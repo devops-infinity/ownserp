@@ -1,0 +1,115 @@
+{
+  "searchParameters": {
+    "q": "apple inc",
+    "gl": "us",
+    "hl": "en",
+    "autocorrect": true,
+    "page": 1,
+    "type": "search"
+  },
+  "knowledgeGraph": {
+    "title": "Apple",
+    "type": "Technology company",
+    "website": "https://www.apple.com",
+    "imageUrl": "https://example.com/apple.png",
+    "description": "Apple Inc. is an American multinational technology company headquartered in Cupertino, California. Apple is the world's largest technology company by revenue and one of the big five American information technology companies.",
+    "descriptionSource": "Wikipedia",
+    "descriptionLink": "https://en.wikipedia.org/wiki/Apple_Inc.",
+    "attributes": {
+      "Headquarters": "Cupertino, CA",
+      "Founded": "1976"
+    }
+  },
+  "answerBox": {
+    "title": "Apple Inc.",
+    "answer": "Apple Inc. designs, manufactures and markets smartphones, personal computers, tablets, wearables and accessories.",
+    "link": "https://www.apple.com"
+  },
+  "peopleAlsoAsk": [
+    {
+      "question": "What does Apple Inc do?",
+      "snippet": "Apple designs and sells consumer electronics and software.",
+      "title": "Apple Inc. | History, Products, Headquarters and Facts",
+      "link": "https://www.britannica.com/topic/Apple-Inc"
+    },
+    {
+      "question": "Who founded Apple?",
+      "snippet": "Steve Jobs, Steve Wozniak and Ronald Wayne founded Apple in 1976.",
+      "title": "Apple Inc.",
+      "link": "https://en.wikipedia.org/wiki/Apple_Inc."
+    },
+    {
+      "question": "Where is Apple headquartered?",
+      "snippet": "Apple Park, One Apple Park Way, Cupertino, California.",
+      "title": "Apple Park",
+      "link": "https://www.apple.com/apple-park/"
+    }
+  ],
+  "relatedSearches": [
+    { "query": "apple inc stock" },
+    { "query": "apple inc history" },
+    { "query": "apple inc revenue" },
+    { "query": "apple inc headquarters" },
+    { "query": "apple inc products" },
+    { "query": "apple inc ceo" },
+    { "query": "apple inc news" },
+    { "query": "apple inc careers" }
+  ],
+  "organic": [
+    {
+      "title": "Apple",
+      "link": "https://www.apple.com",
+      "snippet": "Discover the innovative world of Apple and shop everything iPhone, iPad, Apple Watch, Mac, and Apple TV, plus explore accessories, entertainment, and expert device support.",
+      "position": 1,
+      "sitelinks": [
+        { "title": "iPhone", "link": "https://www.apple.com/iphone/" },
+        { "title": "Mac", "link": "https://www.apple.com/mac/" }
+      ],
+      "attributes": { "Region": "United States" }
+    },
+    {
+      "title": "Apple Inc. - Wikipedia",
+      "link": "https://en.wikipedia.org/wiki/Apple_Inc.",
+      "snippet": "Apple Inc. is an American multinational technology company headquartered in Cupertino, California. Apple is the world's largest technology company by revenue.",
+      "position": 2,
+      "date": "2026-10-20"
+    },
+    {
+      "title": "Apple Inc. | History, Products, Headquarters, and Facts",
+      "link": "https://www.britannica.com/topic/Apple-Inc",
+      "snippet": "Apple Inc., formerly Apple Computer Inc., is an American multinational corporation that is one of the world's leading consumer electronics and software companies.",
+      "position": 3
+    },
+    {
+      "title": "Apple Inc. (AAPL) Company Profile and News",
+      "link": "https://www.bloomberg.com/profile/company/AAPL:US",
+      "snippet": "Apple Inc. designs, manufactures, and markets smartphones, personal computers, tablets, wearables, and accessories worldwide.",
+      "position": 4
+    },
+    {
+      "title": "Apple Inc - Reuters",
+      "link": "https://www.reuters.com/markets/companies/AAPL.OQ/",
+      "snippet": "Find the latest Apple Inc news, earnings and analyst research.",
+      "position": 5,
+      "date": "2 weeks ago"
+    },
+    {
+      "title": "Apple Inc. Company Profile - MarketWatch",
+      "link": "https://www.marketwatch.com/investing/stock/aapl/company-profile",
+      "snippet": "Apple Inc. engages in the design, manufacture, and sale of smartphones, personal computers, tablets, wearables, and accessories.",
+      "position": 6
+    },
+    {
+      "title": "Apple Inc. | LinkedIn",
+      "link": "https://www.linkedin.com/company/apple",
+      "snippet": "Apple Inc. | 21,000,000 followers on LinkedIn. Apple revolutionized personal technology with the introduction of the Macintosh in 1984.",
+      "position": 7
+    },
+    {
+      "title": "Apple Inc. Company Profile and News",
+      "link": "https://www.cnbc.com/quotes/AAPL",
+      "snippet": "Apple Inc. engages in the design, manufacture, and marketing of smartphones, personal computers, and portable digital music players.",
+      "position": 8
+    }
+  ]
+}

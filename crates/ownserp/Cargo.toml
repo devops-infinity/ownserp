@@ -1,0 +1,27 @@
+[package]
+name = "ownserp"
+description = "MCP server for the Serper.dev search API, over stdio and Streamable HTTP"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[[bin]]
+name = "ownserp"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+ownserp-core = { path = "../ownserp-core", version = "0.1.0" }
+clap.workspace = true
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

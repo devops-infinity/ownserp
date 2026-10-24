@@ -1,0 +1,43 @@
+[package]
+name = "ownserp-core"
+description = "Engine for the ownserp MCP server: Serper client, tools, shaping, cost ledger"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+rmcp.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+reqwest.workspace = true
+axum.workspace = true
+governor.workspace = true
+secrecy.workspace = true
+keyring.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+sha2.workspace = true
+hex.workspace = true
+url.workspace = true
+toml.workspace = true
+rustls.workspace = true
+hmac.workspace = true
+getrandom.workspace = true
+
+[dev-dependencies]
+insta.workspace = true
+wiremock.workspace = true
+proptest.workspace = true
+tower.workspace = true
