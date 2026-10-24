@@ -1,4 +1,4 @@
-# 0001 Split the crate split into ownserp and ownserp-core
+# 0001 Split the crate into ownserp and ownserp-core
 
 Date: 2026-10-24
 

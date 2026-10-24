@@ -47,8 +47,8 @@ pub struct Settings {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
-    #[serde(default = "profile_version")]
-    version: u32,
+    #[serde(default = "profile_version", rename = "version")]
+    _version: u32,
     pack: Option<PackTier>,
     usd_per_1k: Option<f64>,
     qps: Option<u32>,
@@ -77,10 +77,11 @@ impl Settings {
         let requested_profile = overrides
             .profile
             .clone()
-            .or_else(|| env("OWN_SERPER_PROFILE").map(PathBuf::from));
-        let profile_path = requested_profile
-            .clone()
-            .or_else(|| Some(default_config_dir().join("profile.toml")));
+            .or_else(|| non_empty_env(&env, "OWN_SERPER_PROFILE").map(PathBuf::from));
+        let profile_path = match requested_profile.clone() {
+            Some(path) => Some(path),
+            None => config_dir_from(&env).map(|dir| dir.join("profile.toml")),
+        };
         let profile = match profile_path.as_deref() {
             Some(path) => {
                 let present = match path.try_exists() {
@@ -107,30 +108,28 @@ impl Settings {
             }
             None => Profile::default(),
         };
-        if profile.version > 1 {
-            let shown = profile_path
-                .as_deref()
-                .map_or_else(|| "profile".to_owned(), |path| path.display().to_string());
-            return Err(Error::Config(format!(
-                "{shown} is version {}, newer than this binary supports (1)",
-                profile.version
-            )));
-        }
         let api_key = env("SERPER_API_KEY")
-            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
             .map(SecretString::from);
         let (api_key, api_key_source, api_key_error) = match api_key {
             Some(key) => (Some(key), ApiKeySource::Environment, None),
             None => match keychain_get() {
                 Ok(Some(key)) => (Some(key), ApiKeySource::Keychain, None),
                 Ok(None) => (None, ApiKeySource::Missing, None),
-                Err(error) => (None, ApiKeySource::Missing, Some(error.to_string())),
+                Err(error) => (
+                    None,
+                    ApiKeySource::Missing,
+                    Some(keychain_error_text(&error)),
+                ),
             },
         };
         let qps_env = env_parse::<u32>(&env, "OWN_SERPER_QPS")?;
         let cache_ttl_env = env_parse::<u64>(&env, "OWN_SERPER_CACHE_TTL_SECS")?;
         let usd_env = env_parse::<f64>(&env, "SERPER_USD_PER_1K")?;
         let http_qps_env = env_parse::<u32>(&env, "OWN_SERPER_HTTP_QPS")?;
+        let ceiling_env = env_parse::<u32>(&env, "OWN_SERPER_PER_CALL_CREDIT_CEILING")?;
+        let budget_env = env_parse::<u64>(&env, "OWN_SERPER_SESSION_BUDGET_CREDITS")?;
         let usd_rate = usd_env.or(profile.usd_per_1k);
         if let Some(rate) = usd_rate
             && (!rate.is_finite() || rate < 0.0)
@@ -154,21 +153,34 @@ impl Settings {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
-        let allowed_hosts = env("OWN_SERPER_ALLOWED_HOSTS")
+        let env_hosts = env("OWN_SERPER_ALLOWED_HOSTS")
             .map(|raw| parse_host_list(&raw))
-            .filter(|hosts| !hosts.is_empty())
-            .or(profile.allowed_hosts);
+            .filter(|hosts| !hosts.is_empty());
+        let allowed_hosts = match env_hosts {
+            Some(hosts) => Some(hosts),
+            None => profile.allowed_hosts.map(clean_profile_hosts).transpose()?,
+        };
         let cache_max_bytes = profile.cache_max_bytes.unwrap_or(16 * 1024 * 1024);
         if cache_max_bytes > MAX_CACHE_BYTES {
             return Err(Error::Config(format!(
                 "cache_max_bytes is {cache_max_bytes}; the cap is {MAX_CACHE_BYTES} bytes (1 GiB)"
             )));
         }
-        let ledger_dir = overrides
+        let ledger_dir = match overrides
             .ledger_dir
-            .or_else(|| env("OWN_SERPER_LEDGER_DIR").map(PathBuf::from))
+            .or_else(|| non_empty_env(&env, "OWN_SERPER_LEDGER_DIR").map(PathBuf::from))
             .or(profile.ledger_dir)
-            .unwrap_or_else(|| default_data_dir().join("ledger"));
+        {
+            Some(dir) => dir,
+            None => data_dir_from(&env)
+                .ok_or_else(|| {
+                    Error::Config(
+                        "no absolute base directory for the default ledger; set HOME, XDG_CONFIG_HOME, or XDG_DATA_HOME, or pass an explicit ledger directory"
+                            .to_owned(),
+                    )
+                })?
+                .join("ledger"),
+        };
         if !ledger_dir.is_absolute() {
             return Err(Error::Config(format!(
                 "ledger_dir {} must be an absolute path",
@@ -188,7 +200,7 @@ impl Settings {
             http: overrides.http.or(profile.http).unwrap_or(false),
             bind: overrides
                 .bind
-                .or_else(|| env("OWN_SERPER_BIND"))
+                .or_else(|| non_empty_env(&env, "OWN_SERPER_BIND"))
                 .or(profile.bind)
                 .unwrap_or_else(|| "127.0.0.1:8777".to_owned()),
             bearer_tokens,
@@ -203,8 +215,8 @@ impl Settings {
                 .unwrap_or(0),
             cache_max_bytes,
             ledger_dir,
-            per_call_credit_ceiling: profile.per_call_credit_ceiling,
-            session_budget_credits: profile.session_budget_credits,
+            per_call_credit_ceiling: ceiling_env.or(profile.per_call_credit_ceiling),
+            session_budget_credits: budget_env.or(profile.session_budget_credits),
             enable_batch: overrides
                 .enable_batch
                 .or(profile.enable_batch)
@@ -331,12 +343,46 @@ fn env_parse<T: std::str::FromStr>(
     })
 }
 
+fn non_empty_env(env: &impl Fn(&str) -> Option<String>, name: &str) -> Option<String> {
+    env(name)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+fn keychain_error_text(error: &Error) -> String {
+    let causes = error.causes();
+    if causes.is_empty() {
+        "keychain failure while using the OS keychain".to_owned()
+    } else {
+        format!(
+            "keychain failure while using the OS keychain: {}",
+            causes.join(": ")
+        )
+    }
+}
+
 fn parse_host_list(raw: &str) -> Vec<String> {
     raw.split(',')
         .map(str::trim)
         .filter(|host| !host.is_empty())
-        .map(ToOwned::to_owned)
+        .map(str::to_ascii_lowercase)
         .collect()
+}
+
+fn clean_profile_hosts(hosts: Vec<String>) -> Result<Vec<String>> {
+    let cleaned: Vec<String> = hosts
+        .iter()
+        .map(|host| host.trim())
+        .filter(|host| !host.is_empty())
+        .map(str::to_ascii_lowercase)
+        .collect();
+    if cleaned.is_empty() {
+        return Err(Error::Config(
+            "allowed_hosts holds no host after trimming; name at least one host or remove the key"
+                .to_owned(),
+        ));
+    }
+    Ok(cleaned)
 }
 
 const fn profile_version() -> u32 {
@@ -384,35 +430,68 @@ fn read_profile(path: &Path) -> Result<Profile> {
             path.display()
         )));
     }
+    let table: toml::Table = toml::from_str(&raw)
+        .map_err(|error| Error::Config(format!("profile {}: {error}", path.display())))?;
+    if let Some(toml::Value::Integer(version)) = table.get("version")
+        && *version > 1
+    {
+        return Err(Error::Config(format!(
+            "{} is version {version}, newer than this binary supports (1)",
+            path.display()
+        )));
+    }
     toml::from_str::<Profile>(&raw)
         .map_err(|error| Error::Config(format!("profile {}: {error}", path.display())))
 }
 
 pub fn default_config_dir() -> PathBuf {
-    base_dir("XDG_CONFIG_HOME", ".config", "APPDATA").join("ownserp")
+    config_dir_from(&process_env).unwrap_or_else(|| PathBuf::from("."))
 }
 
 pub fn default_data_dir() -> PathBuf {
-    base_dir("XDG_DATA_HOME", ".local/share", "LOCALAPPDATA").join("ownserp")
+    data_dir_from(&process_env).unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn base_dir(variable: &str, fallback: &str, windows_variable: &str) -> PathBuf {
-    if let Some(path) = std::env::var_os(variable)
+fn config_dir_from(env: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    base_dir(env, "XDG_CONFIG_HOME", ".config", "APPDATA").map(|base| base.join("ownserp"))
+}
+
+fn data_dir_from(env: &impl Fn(&str) -> Option<String>) -> Option<PathBuf> {
+    base_dir(env, "XDG_DATA_HOME", ".local/share", "LOCALAPPDATA").map(|base| base.join("ownserp"))
+}
+
+fn process_env(name: &str) -> Option<String> {
+    std::env::var(name).ok()
+}
+
+fn base_dir(
+    env: &impl Fn(&str) -> Option<String>,
+    variable: &str,
+    fallback: &str,
+    windows_variable: &str,
+) -> Option<PathBuf> {
+    if let Some(path) = env(variable)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
     {
-        return path;
+        return Some(path);
     }
-    if let Some(home) = std::env::var_os("HOME") {
-        return PathBuf::from(home).join(fallback);
+    if let Some(home) = env("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Some(home.join(fallback));
     }
     #[cfg(windows)]
-    if let Some(path) = std::env::var_os(windows_variable) {
-        return PathBuf::from(path);
+    if let Some(path) = env(windows_variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+    {
+        return Some(path);
     }
     #[cfg(not(windows))]
     let _ = windows_variable;
-    PathBuf::from(".")
+    None
 }
 
 pub fn keychain_get() -> Result<Option<SecretString>> {
@@ -682,7 +761,175 @@ mod tests {
             base_overrides(),
         )
         .expect_err("must fail");
-        assert!(error.to_string().contains("profile"));
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn a_newer_profile_version_is_refused_before_an_unknown_key() {
+        let error = load(
+            "newer-profile-unknown",
+            "version = 2\nnew_key = true\n",
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("version 2"));
+        assert!(!error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn an_unresolvable_config_directory_skips_the_default_profile() {
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let settings = Settings::load_with(
+            Overrides {
+                ledger_dir: Some(std::env::temp_dir().join("ownserp-config-ledger")),
+                cache_ttl_secs: Some(0),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("settings");
+        assert_eq!(settings.profile_path(), None);
+    }
+
+    #[test]
+    fn an_unresolvable_data_directory_is_refused_by_name() {
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let error = Settings::load_with(Overrides::default(), |name| map.get(name).cloned())
+            .expect_err("must fail");
+        let text = error.to_string();
+        assert!(text.contains("HOME"));
+        assert!(text.contains("XDG_CONFIG_HOME"));
+        assert!(text.contains("XDG_DATA_HOME"));
+    }
+
+    #[test]
+    fn a_keychain_error_names_its_cause() {
+        let error = Error::keychain(
+            "using the OS keychain",
+            std::io::Error::other("the secret service is not running"),
+        );
+        assert!(keychain_error_text(&error).contains("the secret service is not running"));
+    }
+
+    #[test]
+    fn an_empty_bind_variable_falls_back_to_the_default() {
+        let settings = load(
+            "empty-bind",
+            "",
+            &[("SERPER_API_KEY", "test-key"), ("OWN_SERPER_BIND", "  ")],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(settings.bind(), "127.0.0.1:8777");
+    }
+
+    #[test]
+    fn an_empty_ledger_dir_variable_falls_back_to_the_profile() {
+        let ledger = std::env::temp_dir().join("ownserp-config-ledger-from-profile");
+        let body = format!("ledger_dir = {ledger:?}\n");
+        let settings = load(
+            "empty-ledger",
+            &body,
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_LEDGER_DIR", " "),
+            ],
+            Overrides {
+                ledger_dir: None,
+                cache_ttl_secs: Some(0),
+                ..Overrides::default()
+            },
+        )
+        .expect("settings");
+        assert_eq!(settings.ledger_dir(), ledger.as_path());
+    }
+
+    #[test]
+    fn an_empty_profile_variable_is_ignored() {
+        let dir = std::env::temp_dir().join(format!("ownserp-config-xdg-{}", std::process::id()));
+        let config = dir.join("ownserp");
+        std::fs::create_dir_all(&config).expect("dir");
+        std::fs::write(config.join("profile.toml"), "cache_ttl_secs = 9\n").expect("profile");
+        let xdg = dir.display().to_string();
+        let map = environment(&[
+            ("SERPER_API_KEY", "test-key"),
+            ("OWN_SERPER_PROFILE", "  "),
+            ("XDG_CONFIG_HOME", &xdg),
+        ]);
+        let settings = Settings::load_with(
+            Overrides {
+                ledger_dir: Some(dir.join("ledger")),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("settings");
+        assert_eq!(settings.cache_ttl_secs(), 9);
+        let expected = config.join("profile.toml");
+        assert_eq!(settings.profile_path(), Some(expected.as_path()));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_profile_host_list_is_trimmed_and_lowercased() {
+        let settings = load(
+            "profile-hosts",
+            "allowed_hosts = [\" API.Example.COM \", \"\", \"edge.example\"]\n",
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect("settings");
+        let expected = vec!["api.example.com".to_owned(), "edge.example".to_owned()];
+        assert_eq!(settings.allowed_hosts(), Some(expected.as_slice()));
+    }
+
+    #[test]
+    fn an_empty_profile_host_list_is_refused() {
+        let error = load(
+            "empty-hosts",
+            "allowed_hosts = [\"\", \"  \"]\n",
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("allowed_hosts"));
+    }
+
+    #[test]
+    fn the_credit_limits_come_from_the_environment() {
+        let settings = load(
+            "limits-env",
+            "per_call_credit_ceiling = 9\nsession_budget_credits = 90\n",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_PER_CALL_CREDIT_CEILING", "3"),
+                ("OWN_SERPER_SESSION_BUDGET_CREDITS", "30"),
+            ],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(settings.per_call_credit_ceiling(), Some(3));
+        assert_eq!(settings.session_budget_credits(), Some(30));
+    }
+
+    #[test]
+    fn a_non_numeric_credit_limit_is_refused() {
+        let error = load(
+            "limits-bad",
+            "",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_PER_CALL_CREDIT_CEILING", "many"),
+            ],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("OWN_SERPER_PER_CALL_CREDIT_CEILING")
+        );
     }
 
     #[test]

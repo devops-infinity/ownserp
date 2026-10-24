@@ -118,6 +118,50 @@ verify_version_stamps() {
 	[[ "$mismatch" -eq 0 ]] || die "the version stamp did not reach every file for $want"
 }
 
+insert_changelog_heading() {
+	local version="$1" date="$2" tmp heading
+	heading="## [$version] - $date"
+	tmp="$(mktemp "$(dirname -- CHANGELOG.md)/.stamp.XXXXXX")"
+	awk -v heading="$heading" '
+		!done && /^## \[Unreleased\]/ {
+			print "## [Unreleased]"
+			print ""
+			print heading
+			done=1
+			next
+		}
+		!done && /^## \[[0-9]/ { print heading; print ""; done=1 }
+		{ print }
+		END { if (!done) { print ""; print heading; print "" } }
+	' CHANGELOG.md >"$tmp" || {
+		rm -f "$tmp"
+		die "could not rewrite CHANGELOG.md"
+	}
+	mv "$tmp" CHANGELOG.md
+}
+
+add_changelog_link() {
+	local new="$1" previous="$2" url
+	url="https://github.com/devops-infinity/ownserp/compare/v$previous...v$new"
+	if grep -qF "[$new]: $url" CHANGELOG.md; then
+		return 0
+	fi
+	printf '\n[%s]: %s\n' "$new" "$url" >>CHANGELOG.md
+}
+
+check_shell_syntax() {
+	local file
+	for file in "$@"; do
+		bash -n "$file" || die "syntax error in $file"
+	done
+}
+
+require_packaged_dist() {
+	local version="$1" dir="$2"
+	[[ -f "$dir/sha256.sum" ]] || die "missing $dir/sha256.sum; run tools/release.sh --package first"
+	[[ -f "$dir/ownserp-$version.mcpb" ]] || die "missing $dir/ownserp-$version.mcpb; the packaged files do not belong to $version"
+}
+
 host_target() {
 	rustc -vV | awk '/^host:/{print $2}'
 }

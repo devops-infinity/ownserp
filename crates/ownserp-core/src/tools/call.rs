@@ -26,8 +26,6 @@ use crate::tools::args::{
 };
 use crate::types::{Preset, TextMode};
 
-const SCRAPE_MAX_CREDITS: u32 = 10;
-
 pub struct ToolContext {
     pub client: SerperClient,
     pub settings: Settings,
@@ -342,8 +340,12 @@ async fn search_and_record(
                     tool: endpoint.tool_name().to_owned(),
                     endpoint: endpoint.path().to_owned(),
                     args_hash: args_hash(ctx.hash_key.as_ref(), &body),
-                    credits_estimated: credits,
-                    credits_actual: reported_credits,
+                    credits_estimated: if cache_age.is_some() { 0 } else { credits },
+                    credits_actual: if cache_age.is_some() {
+                        None
+                    } else {
+                        reported_credits
+                    },
                     batch_multiplier: 1,
                     duration_ms: elapsed_ms(started),
                     status: format!("error:{}", error.code()),
@@ -352,6 +354,7 @@ async fn search_and_record(
                     tokens_saved: 0,
                     cache_hit: cache_age.is_some(),
                 },
+                _reservation.take(),
             )
             .await;
             return Err(error);
@@ -382,6 +385,7 @@ async fn search_and_record(
             tokens_saved: saved,
             cache_hit: cache_age.is_some(),
         },
+        _reservation.take(),
     )
     .await;
     let cost = cost_info(ctx, charged, cache_age);
@@ -646,8 +650,8 @@ async fn scrape(
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
     let body = args.body()?;
-    let credits = Endpoint::Scrape.base_cost().get();
-    let _reservation = reserve_budget(ctx, SCRAPE_MAX_CREDITS).await?;
+    let attempt = crate::cost::SCRAPE_RESERVATION_CREDITS;
+    let mut _reservation = reserve_budget(ctx, attempt).await?;
     let started = Instant::now();
     let raw = match ctx.client.post(Endpoint::Scrape, &body, cancellation).await {
         Ok(raw) => raw,
@@ -657,7 +661,7 @@ async fn scrape(
                 "serper_scrape",
                 Endpoint::Scrape.path(),
                 &body,
-                credits,
+                attempt,
                 started,
                 &error,
             )
@@ -667,7 +671,7 @@ async fn scrape(
     };
     let preset = args.preset();
     let content = projection::scrape_content(&raw, preset);
-    let actual = content.credits.unwrap_or(credits);
+    let actual = content.credits;
     let output = ScrapeOutput {
         markdown: content.markdown,
         text: content.text,
@@ -688,8 +692,8 @@ async fn scrape(
             tool: "serper_scrape".to_owned(),
             endpoint: Endpoint::Scrape.path().to_owned(),
             args_hash: args_hash(ctx.hash_key.as_ref(), &body),
-            credits_estimated: credits,
-            credits_actual: Some(actual),
+            credits_estimated: actual.unwrap_or(attempt),
+            credits_actual: actual,
             batch_multiplier: 1,
             duration_ms: elapsed_ms(started),
             status: "ok".to_owned(),
@@ -698,9 +702,10 @@ async fn scrape(
             tokens_saved: 0,
             cache_hit: false,
         },
+        _reservation.take(),
     )
     .await;
-    let cost = cost_info(ctx, actual, None);
+    let cost = cost_info(ctx, actual.unwrap_or(attempt), None);
     set_cost(&mut payload, &cost)?;
     let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
@@ -758,6 +763,7 @@ async fn locations(
             tokens_saved: 0,
             cache_hit: false,
         },
+        None,
     )
     .await;
     let cost = cost_info(ctx, 0, None);
@@ -785,13 +791,14 @@ async fn batch(
         .map(|query| endpoint.estimated_cost(query.num).get())
         .sum::<u32>()
         .saturating_mul(BATCH_MULTIPLIER);
-    let _reservation = reserve_budget(ctx, total).await?;
+    let mut _reservation = reserve_budget(ctx, total).await?;
     let body = Value::Array(bodies);
-    ctx.client
-        .acquire_queries(args.queries.len(), cancellation)
-        .await?;
     let started = Instant::now();
-    let raw = match ctx.client.post(endpoint, &body, cancellation).await {
+    let raw = match ctx
+        .client
+        .post_many(endpoint, &body, args.queries.len(), cancellation)
+        .await
+    {
         Ok(raw) => raw,
         Err(error) => {
             append_failure(
@@ -848,6 +855,19 @@ async fn batch(
                     Some(crate::projection::cap(&error.to_string(), 300).0),
                 ),
             };
+            let error = error.or_else(|| {
+                query_response
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(|message| {
+                        crate::projection::cap(&crate::projection::sanitize(message), 300).0
+                    })
+                    .or_else(|| {
+                        query_response
+                            .get("statusCode")
+                            .map(|code| format!("upstream answered {code}"))
+                    })
+            });
             BatchEntry {
                 query,
                 results,
@@ -879,6 +899,7 @@ async fn batch(
             tokens_saved: 0,
             cache_hit: false,
         },
+        _reservation.take(),
     )
     .await;
     let cost = cost_info(ctx, total, None);
@@ -925,6 +946,7 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
             tokens_saved: 0,
             cache_hit: false,
         },
+        None,
     )
     .await;
     let output = HealthOutput {
@@ -1051,7 +1073,11 @@ fn cost_info(ctx: &ToolContext, credits: u32, cache_age: Option<u64>) -> CostInf
     }
 }
 
-async fn append_call_record(ctx: &ToolContext, call_record: CallRecord) -> Result<()> {
+async fn append_call_record(
+    ctx: &ToolContext,
+    call_record: CallRecord,
+    reservation: Option<Reservation>,
+) -> Result<()> {
     tracing::debug!(
         tool = %call_record.tool,
         credits = call_record.credits_estimated,
@@ -1059,14 +1085,29 @@ async fn append_call_record(ctx: &ToolContext, call_record: CallRecord) -> Resul
         status = %call_record.status,
         "tool call"
     );
+    let reserved = reservation.as_ref().map_or(0, Reservation::credits);
     let ledger = ctx.ledger.clone();
-    tokio::task::spawn_blocking(move || ledger.append(call_record).map(|_| ()))
+    let joined = tokio::task::spawn_blocking(move || ledger.append_reserved(call_record, reserved))
         .await
-        .map_err(|error| Error::Ledger(error.to_string()))?
+        .map_err(|error| Error::Ledger(error.to_string()));
+    match joined {
+        Ok(Ok(_)) => {
+            if let Some(reservation) = &reservation {
+                reservation.disarm();
+            }
+            Ok(())
+        }
+        Ok(Err(error)) => Err(error),
+        Err(error) => Err(error),
+    }
 }
 
-async fn append_call_or_log(ctx: &ToolContext, call_record: CallRecord) {
-    if let Err(error) = append_call_record(ctx, call_record).await {
+async fn append_call_or_log(
+    ctx: &ToolContext,
+    call_record: CallRecord,
+    reservation: Option<Reservation>,
+) {
+    if let Err(error) = append_call_record(ctx, call_record, reservation).await {
         tracing::error!(%error, "a completed call could not be written to the ledger");
     }
 }

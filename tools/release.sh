@@ -35,19 +35,24 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
 
   --prepare        set the next version in Cargo.toml, the ownserp-core
                    requirement, Cargo.lock, server.json, mcpb/manifest.json,
-                   the Dockerfile label, and the README install snippet, and
-                   add the CHANGELOG heading. The diff is left in the working
-                   tree for review.
+                   the Dockerfile label, and the README install snippet, add
+                   the CHANGELOG heading and its compare link, and move any
+                   notes under [Unreleased] to the new heading. The diff is
+                   left in the working tree for review.
   --package        require a clean tree, run tools/verify.sh, build every
                    cargo-dist target this host supports, write the archives,
                    installers, Homebrew formula, and npm package under dist/,
                    build the MCPB bundle, and install the host binary into
                    ~/.local/bin (override with OWN_SERPER_INSTALL_DIR).
-                   Run this on macOS to include the two Darwin targets.
+                   Run this on macOS to include the two Darwin targets, and
+                   on Windows for the Windows target; a target that needs
+                   another host is skipped. A set that skips a target is
+                   refused unless OWN_SERPER_ALLOW_PARTIAL=1 is set.
                    Needs cargo-dist, cargo-zigbuild, zig, and zip.
-  --tag            require a clean tree and a packaged dist/ directory, then
-                   create vX.Y.Z at HEAD (signed when user.signingkey is set);
-                   never pushed
+  --tag            require a clean tree and a dist/ packaged for the current
+                   version, run the strict gate, then create vX.Y.Z at HEAD
+                   (signed when user.signingkey is set); never pushed. The
+                   release workflow is the only publisher.
   --patch          bump the patch number (with --prepare)
   --minor          bump the minor number (with --prepare)
   --major          bump the major number (with --prepare)
@@ -59,7 +64,8 @@ Release order on this machine:
   1. tools/release.sh --prepare --patch, then edit CHANGELOG.md
   2. commit the bump on a release branch and merge it into main
   3. tools/release.sh --package on macOS, so the two Darwin targets are built
-  4. tools/release.sh --tag, then push the tag and publish
+  4. tools/release.sh --tag, then push the tag; the release workflow builds,
+     signs, and publishes the release
 USAGE
 }
 
@@ -145,18 +151,6 @@ set_manifest_version() {
 	mv "$tmp" "$file"
 }
 
-insert_changelog_heading() {
-	local version="$1" date="$2" tmp
-	tmp="$(mktemp "$(dirname -- CHANGELOG.md)/.stamp.XXXXXX")"
-	TEMP_FILES+=("$tmp")
-	awk -v heading="## [$version] - $date" '
-		!done && /^## \[/ { print heading; print ""; done=1 }
-		{ print }
-		END { if (!done) { print ""; print heading; print "" } }
-	' CHANGELOG.md >"$tmp"
-	mv "$tmp" CHANGELOG.md
-}
-
 changelog_has_entries() {
 	local version="$1"
 	awk -v needle="## [$version]" '
@@ -175,7 +169,7 @@ prepare() {
 	log_line INFO "preparing $CURRENT -> $new"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
 		log_line INFO "dry run: would set the version in Cargo.toml, the ownserp-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the Dockerfile label, and the README install snippet"
-		log_line INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
+		log_line INFO "dry run: would add the CHANGELOG heading ## [$new] - $date, move the [Unreleased] notes under it, and add its compare link"
 		return 0
 	fi
 	stamp_version "$REPO" "$CURRENT" "$new"
@@ -187,7 +181,11 @@ prepare() {
 		rm -f Dockerfile.bak
 	fi
 	insert_changelog_heading "$new" "$date"
-	verify_version_stamps "$REPO" "$new"
+	add_changelog_link "$new" "$CURRENT"
+	if ! (verify_version_stamps "$REPO" "$new"); then
+		log_line FAILED "the version stamp did not reach every file; undo with: git checkout -- ."
+		exit 1
+	fi
 	log_line SUCCESS "prepared $new"
 	log_line INFO "next: write the CHANGELOG entries, commit on a release branch, and merge into main"
 }
@@ -219,6 +217,11 @@ package() {
 			log_line WARNING "$target needs macOS or an Apple SDK; build it on the Mac"
 			continue
 		fi
+		if [[ "$target" == *-windows-* && "$host" != *-windows-* ]]; then
+			skipped+=("$target")
+			log_line WARNING "$target needs a Windows host; build it on Windows"
+			continue
+		fi
 		if dist build --tag="v$CURRENT" --artifacts=local --target="$target" --no-local-paths --output-format=json >"$manifests/$target.json"; then
 			cp "$manifests/$target.json" "target/distrib/$target-dist-manifest.json"
 			built+=("$target")
@@ -233,22 +236,25 @@ package() {
 	[[ -f "$DIST_DIR/sha256.sum" ]] || die "missing $DIST_DIR/sha256.sum; dist did not produce the installer checksums"
 	if command -v minisign >/dev/null 2>&1 && [[ -f "${HOME}/.minisign/minisign.key" ]]; then
 		minisign -Sm "$DIST_DIR/sha256.sum" -s "${HOME}/.minisign/minisign.key" >/dev/null
-		cp "${HOME}/.minisign/minisign.pub" "$DIST_DIR/minisign.pub" 2>/dev/null || cp "$REPO/minisign.pub" "$DIST_DIR/minisign.pub"
+		cp "$REPO/minisign.pub" "$DIST_DIR/minisign.pub"
+		minisign -Vm "$DIST_DIR/sha256.sum" -p "$REPO/minisign.pub" >/dev/null 2>&1 ||
+			die "the signature does not verify against $REPO/minisign.pub; check that the signing key matches the published key"
 		log_line SUCCESS "signed sha256.sum with minisign"
 	else
 		log_line WARNING "minisign or ~/.minisign/minisign.key is missing; sha256.sum is unsigned"
 	fi
 	if ((${#skipped[@]})); then
 		log_line WARNING "skipped targets: ${skipped[*]}"
-		log_line WARNING "the installers and formula still name every target; build the skipped ones on a macOS host before publishing"
+		log_line WARNING "the installers and formula still name every target; build the skipped ones on their own host before publishing"
 		if [[ "${OWN_SERPER_ALLOW_PARTIAL:-0}" != "1" ]]; then
-			die "built ${#built[@]} of ${#targets[@]} targets; run --package on macOS for the Darwin targets, or set OWN_SERPER_ALLOW_PARTIAL=1 to publish this partial set on purpose"
+			die "built ${#built[@]} of ${#targets[@]} targets; run --package on macOS for the Darwin targets and on Windows for the Windows target, or set OWN_SERPER_ALLOW_PARTIAL=1 to publish this partial set on purpose"
 		fi
 	fi
 	require_tool zip "run: brew install zip"
 	archive="$DIST_DIR/ownserp-x86_64-unknown-linux-gnu.tar.gz"
 	[[ -f "$archive" ]] || die "missing $archive; the MCPB bundle needs the Linux x86_64 build"
 	stage="$REPO/target/package-stage"
+	STAGE="$stage"
 	rm -rf "$stage"
 	mkdir -p "$stage/unpack" "$stage/bundle/server"
 	tar -xzf "$archive" -C "$stage/unpack"
@@ -273,25 +279,26 @@ package() {
 		log_line WARNING "no host archive for $host; the local binary was not replaced"
 	fi
 	[[ -f "$DIST_DIR/ownserp.rb" ]] && log_line INFO "the Homebrew formula is $DIST_DIR/ownserp.rb"
-	log_line INFO "next: run tools/release.sh --tag, then publish the files under $DIST_DIR"
+	log_line INFO "next: run tools/release.sh --tag, then push the tag; the release workflow publishes"
 }
 
 tag_release() {
 	require_clean_tree
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before tagging"
-	[[ -f "$DIST_DIR/sha256.sum" ]] || die "missing $DIST_DIR/sha256.sum; run tools/release.sh --package first"
+	require_packaged_dist "$CURRENT" "$DIST_DIR"
 	git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		log_line INFO "dry run: would create v$CURRENT at HEAD with the files under $DIST_DIR"
+		log_line INFO "dry run: would run the strict gate and create v$CURRENT at HEAD"
 		return 0
 	fi
+	OWN_SERPER_STRICT_GATE=1 "$REPO/tools/verify.sh"
 	if [[ -n "$(git config user.signingkey || true)" ]]; then
 		git tag -s "v$CURRENT" -m "OwnSERP $CURRENT"
 	else
 		git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
 	fi
 	log_line SUCCESS "created tag v$CURRENT (not pushed)"
-	log_line INFO "publish with: gh release create v$CURRENT \"$DIST_DIR\"/* --title \"OwnSERP $CURRENT\" --notes-file <(sed -n '/## \\[$CURRENT\\]/,/^## \\[/p' CHANGELOG.md | head -n -1)"
+	log_line INFO "push the tag with: git push origin v$CURRENT; .github/workflows/release.yml is the only publisher and builds, signs, and releases from the tag"
 }
 
 case "$MODE" in

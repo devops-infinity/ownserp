@@ -74,7 +74,7 @@ After the release exists, finish the other channels:
 
 - Homebrew: copy `dist/ownserp.rb` into `devops-infinity/homebrew-tap` under `Formula/ownserp.rb`, run `brew audit --strict devops-infinity/tap/ownserp`, then commit and push the tap. The generated formula needs two fixes first: drop the `version` line, because the URL already carries the version, and give `test` a real assertion, because the generated one is empty. `brew audit --strict` fails on both.
 - crates.io: `cargo publish -p ownserp-core --locked`, then `cargo publish -p ownserp --locked`. The core crate goes first, because the binary crate depends on it.
-- MCP Registry: publish npm first, then `mcp-publisher publish`, which reads `server.json` and `mcpb/manifest.json`. The listing names the npm package, so the registry checks `mcpName` inside the published package; `tools/publish-npm.sh` injects `mcpName` before packing. A published npm version cannot be changed afterward, so a version published without `mcpName` cannot be listed. To list the MCPB bundle instead, point `server.json` at the release URL and copy `fileSha256` from `ownserp-X.Y.Z.mcpb.sha256`, because each build of the bundle differs; the workflow pins timestamps and drops extra zip attributes, so the hash for a version holds still once built.
+- MCP Registry: publish npm first, then `mcp-publisher publish`, which reads `server.json`. The listing names the npm package, so the registry checks `mcpName` inside the published package; `tools/publish-npm.sh` injects `mcpName` before packing. A published npm version cannot be changed afterward, so a version published without `mcpName` cannot be listed. To list the MCPB bundle instead, point `server.json` at the release URL and copy `fileSha256` from `ownserp-X.Y.Z.mcpb.sha256`, because each build of the bundle differs; the workflow pins timestamps and drops extra zip attributes, so the hash for a version holds still once built.
 - Container:
 
 ```bash
@@ -106,6 +106,17 @@ tools/reinstall.sh --skip-gate --dir /usr/local/bin
 ## The gate by hand
 
 `tools/verify.sh` is the same set the release runs: shell syntax, shellcheck, shfmt, `cargo fmt --check`, check, clippy with warnings denied, tests, doc tests, docs, `cargo audit` with the three reasoned suppressions, `cargo deny check`, `cargo machete`, and a `gitleaks` scan of the tree and of the commit history. Run it before any push.
+
+## Check the library API before a tag
+
+`ownserp-core` is a published library. Before a tag, compare it with the previous release and read what changed:
+
+```bash
+cargo install cargo-semver-checks
+cargo semver-checks check-release --baseline-rev v<previous>
+```
+
+The README states that the Rust API of `ownserp-core` is not covered by the semantic version promise, which covers the command line, the profile schema, the ledger format, and the tool result shape. A failure here is therefore expected when a release renames or adds a public item; record it in the changelog as breaking rather than treating it as an error.
 
 ## What a release does not do
 

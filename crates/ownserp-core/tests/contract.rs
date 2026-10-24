@@ -127,6 +127,7 @@ fn fixture() -> Value {
     ];
 
     let graph = KnowledgeGraph {
+            truncated: None,
         title: Some("Apple".to_owned()),
         kind: Some("Technology company".to_owned()),
         website: Some("https://www.apple.com".to_owned()),
@@ -138,6 +139,7 @@ fn fixture() -> Value {
     };
 
     let answer = AnswerBox {
+            truncated: None,
         title: Some("Apple Inc.".to_owned()),
         answer: Some("Apple Inc. designs, manufactures and markets smartphones, personal computers, tablets, wearables and accessories.".to_owned()),
         snippet: None,
@@ -147,12 +149,14 @@ fn fixture() -> Value {
 
     let questions = vec![
         PeopleAlsoAsk {
+            truncated: None,
             question: Some("What does Apple Inc do?".to_owned()),
             snippet: Some("Apple designs and sells consumer electronics and software.".to_owned()),
             title: Some("Apple Inc. | History, Products, Headquarters and Facts".to_owned()),
             link: Some("https://www.britannica.com/topic/Apple-Inc".to_owned()),
         },
         PeopleAlsoAsk {
+            truncated: None,
             question: Some("Who founded Apple?".to_owned()),
             snippet: Some(
                 "Steve Jobs, Steve Wozniak and Ronald Wayne founded Apple in 1976.".to_owned(),
@@ -161,6 +165,7 @@ fn fixture() -> Value {
             link: Some("https://en.wikipedia.org/wiki/Apple_Inc.".to_owned()),
         },
         PeopleAlsoAsk {
+            truncated: None,
             question: Some("Where is Apple headquartered?".to_owned()),
             snippet: Some("Apple Park, One Apple Park Way, Cupertino, California.".to_owned()),
             title: Some("Apple Park".to_owned()),
@@ -654,14 +659,14 @@ async fn a_one_credit_call_fits_a_one_credit_budget() {
 }
 
 #[tokio::test]
-async fn a_failed_call_charges_its_estimate() {
+async fn a_server_error_charges_nothing() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/search"))
         .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
         .mount(&server)
         .await;
-    let ctx = context("failure-charge", &server.uri(), 0);
+    let ctx = context("server-error-charge", &server.uri(), 0);
     let failed = call_tool(
         &ctx,
         "serper_search",
@@ -672,6 +677,12 @@ async fn a_failed_call_charges_its_estimate() {
     assert_eq!(
         error_code(&result_json(&failed)),
         Some("serper.upstream_failed")
+    );
+
+    let ledger = std::fs::read_to_string(ctx.ledger.path().expect("path")).expect("ledger");
+    assert!(
+        ledger.contains("\"credits_actual\":0"),
+        "a 5xx must be booked at zero: {ledger}"
     );
 
     let session = call_tool(
@@ -685,13 +696,69 @@ async fn a_failed_call_charges_its_estimate() {
     assert_eq!(
         body.pointer("/structuredContent/credits")
             .and_then(Value::as_u64),
-        Some(1),
-        "a failed call must still charge its estimate"
+        Some(0),
+        "a 5xx must not spend credits"
     );
     assert_eq!(
         body.pointer("/structuredContent/calls")
             .and_then(Value::as_u64),
         Some(1)
+    );
+}
+
+#[tokio::test]
+async fn a_scrape_without_a_reported_price_books_the_maximum_estimate() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"markdown": "# Title\n\nBody."})),
+        )
+        .mount(&server)
+        .await;
+    let ctx = context("scrape-estimate", &server.uri(), 0);
+    let args = arguments(json!({"url": "https://example.org/page"}));
+    let result = call_tool(
+        &ctx,
+        "serper_scrape",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(error_code(&result_json(&result)), None);
+    let ledger = std::fs::read_to_string(ctx.ledger.path().expect("path")).expect("ledger");
+    assert!(
+        ledger.contains("\"credits_estimated\":10"),
+        "an unknown scrape price must keep the maximum estimate: {ledger}"
+    );
+    assert!(
+        ledger.contains("\"credits_actual\":null"),
+        "an unknown scrape price must not book a figure: {ledger}"
+    );
+}
+
+#[tokio::test]
+async fn an_exhausted_balance_reports_a_rate_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"message": "Not enough credits"})),
+        )
+        .mount(&server)
+        .await;
+    let ctx = context("exhausted", &server.uri(), 0);
+    let failed = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&arguments(json!({"q": "x"}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        error_code(&result_json(&failed)),
+        Some("serper.rate_limited"),
+        "an exhausted balance must not read as a plain upstream failure"
     );
 }
 

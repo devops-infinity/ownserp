@@ -28,7 +28,7 @@ pub use config::{
 };
 pub use cost::{BATCH_MULTIPLIER, Endpoint, Host, usd_for_call, usd_for_credits};
 pub use error::{Error, Result};
-pub use ledger::{CallRecord, Ledger, Totals, rotate, verify};
+pub use ledger::{CallRecord, Ledger, LedgerRow, Reservation, ToolTotals, Totals, rotate, verify};
 pub use projection::{
     MAX_RESULT_BYTES, ScrapeContent, SearchSections, fit_to_budget, sanitize, search_sections,
     summary_text,

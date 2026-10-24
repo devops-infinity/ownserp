@@ -6,7 +6,7 @@ An MCP server for the Serper.dev search API, with per-call credit accounting.
 
 ## Status
 
-Stable at 1.0. Every release ships from a tagged commit after the full local gate passes. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
+Stable at 1.0. Every release ships from a tagged commit after the full local gate passes. The semantic version promise covers the command line, the profile schema, the ledger format, and the tool result shape. The Rust API of the `ownserp-core` crate is not covered by it, so a minor release may rename a public item there. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
 
 ## Contents
 
@@ -33,7 +33,7 @@ Stable at 1.0. Every release ships from a tagged commit after the full local gat
 
 OwnSERP exposes the Serper.dev search endpoints as MCP (Model Context Protocol) tools. A model can search the web, images, news, places, maps, videos, shopping, scholar, patents, reviews, and lens, extract a page, resolve a location name, and read its own spend, all through one local server.
 
-It is built for agents that spend metered credits. Every tool description states its price, every result carries a cost object, and a local ledger records each call. Before a call spends anything, the server checks a per-call ceiling and an optional session budget and refuses the call when either would be passed. Results are shaped for a model rather than for a browser: invisible characters are stripped, long text is capped and marked, absent fields are omitted, and key order is fixed.
+It is built for agents that spend metered credits. Every tool description states its price, every result carries a cost object, and a local ledger records each call. Before a call spends anything, the server can check a per-call ceiling and a session budget and refuse the call when either would be passed. Both are off until you set them, through `per_call_credit_ceiling` and `session_budget_credits` in the profile, or `OWN_SERPER_PER_CALL_CREDIT_CEILING` and `OWN_SERPER_SESSION_BUDGET_CREDITS` in the environment. Results are shaped for a model rather than for a browser: invisible characters are stripped, long text is capped and marked, absent fields are omitted, and key order is fixed.
 
 The server is one binary and needs no language runtime. It speaks MCP revision 2026-07-28 and answers clients on 2025-11-25. It runs over stdio by default, or over Streamable HTTP with a bearer token gate.
 
@@ -56,7 +56,7 @@ Release archives cover macOS ARM64 and x86_64, Linux x86_64 with glibc, Linux AR
 npx @devops-infinity/ownserp serve
 ```
 
-The package downloads the archive for the current platform on install, checks it against the release checksum, and runs the binary. Node 18 or newer.
+The package downloads the archive for the current platform on install, checks it against the release checksum, and runs the binary. Node 22 or newer.
 
 ### Homebrew
 
@@ -64,7 +64,7 @@ The package downloads the archive for the current platform on install, checks it
 brew install devops-infinity/tap/ownserp
 ```
 
-macOS and Linux both install the release binary.
+macOS and Linux both install the release binary. The tap is updated by hand after each release, so it can lag the release by a few minutes.
 
 ### Shell installer
 
@@ -119,6 +119,8 @@ Use the PowerShell installer above, or download `ownserp-x86_64-pc-windows-msvc.
 
 ### MCPB bundle
 
+The bundle carries the Linux x86_64 binary only. On another architecture, install the archive for that platform instead.
+
 Download `ownserp-<version>.mcpb` from the release page and open it in a client that supports MCP Bundles. The bundle asks for the API key and stores it in the OS keychain.
 
 ## Quick start
@@ -131,7 +133,7 @@ npx @devops-infinity/ownserp serve
 
 The first command sets the key for the shell. The second prints the resolved settings, the key source with the key masked, and the answer from both Serper hosts. The third starts the server on stdio, which is the command an MCP client launches, so it keeps running until the client stops it.
 
-To connect a client, add the server as shown in the next section. This repository carries a project `.mcp.json`, so Claude Code picks it up inside this checkout.
+To connect a client, add the server as shown in the next section. 
 
 ## Connect a client
 
@@ -308,7 +310,7 @@ Every tool description in the tool list states the price, so a model can budget 
 
 Every result tool takes `fields`, defaulting to `standard`.
 
-- `minimal` keeps the title, link, and rank. It suits high-volume loops.
+- `minimal` keeps the title, link, and rank, plus the one price, date, rating, or year field that family reports. It suits high-volume loops.
 - `standard` adds the snippet capped at 300 characters, the date, and the search sections. It carries what an agent needs to reason and cite without a second call.
 - `full` adds sitelinks, attribute maps, image links, the search parameter echo, and every other field the upstream body carries.
 
@@ -318,15 +320,15 @@ Each result carries `structuredContent` for the data and a one-line text summary
 
 The ledger lives at `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/share/ownserp/ledger/calls.jsonl`. On Windows it lives at `%LOCALAPPDATA%\ownserp\ledger\calls.jsonl`, and when `HOME` is set it follows the Unix path. A row holds the tool, the endpoint, a keyed hash of the arguments, estimated credits, actual credits when the response reports them, duration, status, bytes, and token counts. Query text is never written.
 
-A call that Serper rejects with a 4xx status, or answers with a rate limit, is recorded at zero credits, because nothing was billed. A timeout, a server error, or a cancel is recorded at the estimate, because the request may have reached Serper and been billed.
+A call that Serper rejects with a 4xx or 5xx status, answers with a rate limit, or answers with a redirect is recorded at zero credits, because nothing was billed. A timeout or a cancel is recorded at the estimate, because the request may have reached Serper and been billed.
 
 ```sh
 ownserp audit verify
 ```
 
-On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
+On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. On Windows a running server does not notice a rotate, so restart it to pick up the new chain. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
-`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. The response cache and the `OWN_SERPER_QPS` ceiling stay per process: each process keeps its own cache and its own outbound request rate. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
+`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. That bound holds only when a ceiling is set. With no ceiling it is the process count times the largest single reservation, which is 900 credits for a 100-query maps or lens batch. The response cache and the `OWN_SERPER_QPS` ceiling stay per process: each process keeps its own cache and its own outbound request rate. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
 
 To close a ledger without losing it, run `ownserp audit rotate`. It verifies the chain and archives the file beside the original with a timestamp. Every running server opens a fresh chain on its next write.
 
@@ -386,7 +388,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, rate limits before it checks the token, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, checks the bearer token before it spends the global rate limit, and keeps `/readyz` out of that limiter, holds at most 128 requests at once, derives each request deadline from `request_timeout_secs` and the retry count, and cancels the call when the deadline passes, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
 
 ## Security
 
@@ -417,9 +419,9 @@ cargo install --path crates/ownserp --locked
 tools/verify.sh
 ```
 
-`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
+`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a secret scan of the tree and of the git history. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
 
-The release build itself runs in `.github/workflows/release.yml` on a macOS runner when a `v*` tag is pushed.
+The release build itself runs in `.github/workflows/release.yml` on a matrix of native runners when a `v*` tag is pushed.
 
 The local lifecycle:
 

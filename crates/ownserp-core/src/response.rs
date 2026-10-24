@@ -328,6 +328,8 @@ pub struct KnowledgeGraph {
     pub description_link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub attributes: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -343,6 +345,8 @@ pub struct AnswerBox {
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub list: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -356,6 +360,8 @@ pub struct PeopleAlsoAsk {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub truncated: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

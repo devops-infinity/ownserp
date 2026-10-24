@@ -61,15 +61,21 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
         .build()
         .context("building the runtime")?;
     let (health, balance) =
-        runtime.block_on(async { (client.health().await, client.live_balance().await) });
+        runtime.block_on(async { (client.health().await, client.account_probe().await) });
     let reachable = health.is_some();
     match health {
         Some(body) => emit(&format!("serper api health: {body}"))?,
         None => emit("serper api health: no answer from api.serper.dev/health")?,
     }
     match balance {
-        Some(credits) => emit(&format!("account balance: {credits} credits"))?,
-        None => emit("account balance: not reported; GET /account did not answer with a balance")?,
+        Some((status, _)) if status == 401 || status == 403 => {
+            emit(&format!(
+                "account balance: the key was rejected (HTTP {status})"
+            ))?;
+            bail!("the API key was rejected; set a valid one");
+        }
+        Some((_, Some(credits))) => emit(&format!("account balance: {credits} credits"))?,
+        _ => emit("account balance: not reported; GET /account did not answer with a balance")?,
     }
     if !reachable {
         bail!("api.serper.dev/health did not answer");

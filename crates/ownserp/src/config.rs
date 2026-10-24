@@ -1,15 +1,15 @@
-use std::io::{BufRead, IsTerminal, Read};
+use std::io::{IsTerminal, Read};
 
 use anyhow::{Context, bail};
-use ownserp_core::{Overrides, SecretString, Settings, keychain_delete, keychain_set};
+use ownserp_core::{SecretString, Settings, keychain_delete, keychain_set};
 
-use crate::cli::{ConfigAction, ConfigArgs};
+use crate::cli::{ConfigAction, ConfigArgs, ConfigShowArgs};
 use crate::output::emit;
 
 pub(crate) fn run(args: ConfigArgs) -> anyhow::Result<()> {
     match args.action {
         ConfigAction::SetApiKey => set_key(),
-        ConfigAction::Show => show(),
+        ConfigAction::Show(args) => show(args),
         ConfigAction::DeleteApiKey => {
             keychain_delete().context("removing the key")?;
             emit("stored key removed; the environment variable is untouched")?;
@@ -25,17 +25,25 @@ fn set_key() -> anyhow::Result<()> {
         );
     }
     eprintln!("reading the API key from stdin");
-    let mut line = String::new();
-    std::io::stdin()
-        .lock()
-        .take(4096)
-        .read_line(&mut line)
-        .context("reading stdin")?;
-    let trimmed = clean_key(&line)?;
+    let trimmed = read_key(std::io::stdin().lock())?;
     let secret = SecretString::from(trimmed);
     keychain_set(&secret).context("storing the key in the OS keychain")?;
     emit("stored the key in the OS keychain")?;
     Ok(())
+}
+
+fn read_key(reader: impl Read) -> anyhow::Result<String> {
+    let mut buffer = Vec::new();
+    reader
+        .take(4096)
+        .read_to_end(&mut buffer)
+        .context("reading stdin")?;
+    let raw = std::str::from_utf8(&buffer)
+        .map_err(|_| anyhow::anyhow!("the key on stdin is not valid UTF-8"))?;
+    let cleaned = clean_key(raw);
+    buffer.fill(0);
+    let _ = std::hint::black_box(&buffer);
+    cleaned
 }
 
 fn clean_key(raw: &str) -> anyhow::Result<String> {
@@ -49,11 +57,14 @@ fn clean_key(raw: &str) -> anyhow::Result<String> {
     if trimmed.chars().any(char::is_control) {
         bail!("the key contains a control character");
     }
+    if trimmed.chars().any(char::is_whitespace) {
+        bail!("the key contains whitespace");
+    }
     Ok(trimmed.to_owned())
 }
 
-fn show() -> anyhow::Result<()> {
-    let settings = Settings::load(Overrides::default()).context("resolving settings")?;
+fn show(args: ConfigShowArgs) -> anyhow::Result<()> {
+    let settings = Settings::load(args.into_overrides()).context("resolving settings")?;
     for line in summary(&settings) {
         emit(&line)?;
     }
@@ -61,7 +72,7 @@ fn show() -> anyhow::Result<()> {
 }
 
 fn summary(settings: &Settings) -> Vec<String> {
-    vec![
+    let mut lines = vec![
         format!("api key source: {}", settings.api_key_source().label()),
         format!("api key: {}", settings.masked_key()),
         format!("pack tier: {:?}", settings.pack()),
@@ -72,12 +83,18 @@ fn summary(settings: &Settings) -> Vec<String> {
                 .profile_path()
                 .map_or_else(|| "none".to_owned(), |path| path.display().to_string())
         ),
-    ]
+    ];
+    if let Some(error) = settings.api_key_error() {
+        lines.insert(1, format!("keychain error: {error}"));
+    }
+    lines
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
+
+    use ownserp_core::Overrides;
 
     use super::*;
 
@@ -103,6 +120,20 @@ mod tests {
         assert!(clean_key("   ").is_err());
         assert!(clean_key(&"a".repeat(513)).is_err());
         assert!(clean_key("abc\u{7}").is_err());
+    }
+
+    #[test]
+    fn a_key_with_an_inner_space_is_rejected() {
+        assert!(clean_key("abc def").is_err());
+        assert!(read_key(std::io::Cursor::new(b"abc def\n")).is_err());
+    }
+
+    #[test]
+    fn a_key_is_read_from_a_reader() {
+        assert_eq!(
+            read_key(std::io::Cursor::new(b"  abc123  \n")).expect("key"),
+            "abc123"
+        );
     }
 
     #[test]

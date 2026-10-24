@@ -33,6 +33,8 @@ pub enum Error {
     },
     #[error("ledger: {0}")]
     Ledger(String),
+    #[error("ledger busy: {0}")]
+    LedgerBusy(String),
     #[error("input or output failure while {context}")]
     Io {
         context: &'static str,
@@ -51,6 +53,10 @@ pub enum Error {
     UnknownTool { name: String },
     #[error("request cancelled by the client")]
     Cancelled,
+    #[error("request cancelled before it was sent")]
+    CancelledBeforeSend,
+    #[error("could not reach Serper")]
+    ConnectFailed { message: String },
 }
 
 impl Error {
@@ -73,6 +79,7 @@ impl Error {
             Self::MissingApiKey => "serper.auth_missing",
             Self::InvalidArgs(_) => "serper.bad_request",
             Self::Upstream { status, .. } => match status {
+                400 | 422 => "serper.bad_request",
                 401 | 403 => "serper.auth_failed",
                 429 => "serper.rate_limited",
                 _ => "serper.upstream_failed",
@@ -82,18 +89,19 @@ impl Error {
             Self::Network { .. } => "serper.upstream_failed",
             Self::Config(_) => "serper.config_error",
             Self::Keychain { .. } => "serper.keychain_error",
-            Self::Ledger(_) | Self::Io { .. } | Self::Json { .. } | Self::Projection(_) => {
-                "serper.internal_error"
-            }
+            Self::Ledger(_) | Self::LedgerBusy(_) | Self::Io { .. } => "serper.internal_error",
+            Self::Json { .. } | Self::Projection(_) => "serper.internal_error",
             Self::UnknownTool { .. } => "serper.tool_not_found",
-            Self::Cancelled => "serper.cancelled",
+            Self::Cancelled | Self::CancelledBeforeSend => "serper.cancelled",
+            Self::ConnectFailed { .. } => "serper.upstream_failed",
         }
     }
 
     pub fn is_unbilled(&self) -> bool {
         match self {
-            Self::Upstream { status, .. } => (400..500).contains(status),
+            Self::Upstream { status, .. } => *status >= 300,
             Self::RateLimited { .. } => true,
+            Self::CancelledBeforeSend | Self::ConnectFailed { .. } => true,
             _ => false,
         }
     }
@@ -107,6 +115,7 @@ impl Error {
                 "Fix the argument named in the message and call the tool again."
             }
             Self::Upstream { status, .. } => match status {
+                400 | 422 => "Fix the request the message names, then try again.",
                 401 | 403 => {
                     "Check the API key at https://serper.dev/api-keys and set a valid one."
                 }
@@ -126,19 +135,30 @@ impl Error {
             Self::Keychain { .. } => {
                 "Use SERPER_API_KEY instead, or start a session bus with a keyring service."
             }
-            Self::Ledger(_) | Self::Io { .. } | Self::Json { .. } | Self::Projection(_) => {
+            Self::LedgerBusy(_) => {
+                "Another ownserp process holds the ledger. Stop the older copy, or wait and retry."
+            }
+            Self::Json { .. } => {
+                "The answer could not be read as JSON. Retry, and check https://serper.betteruptime.com if it repeats."
+            }
+            Self::Projection(_) => {
+                "The answer was read but could not be shaped. Report the tool and the arguments."
+            }
+            Self::Ledger(_) | Self::Io { .. } => {
                 "Check the ledger directory permissions and free space."
             }
             Self::UnknownTool { .. } => {
                 "Call tools/list and use only the names it returns for this configuration."
             }
             Self::Cancelled => "Call the tool again if the work is still needed.",
+            Self::CancelledBeforeSend => "Call the tool again if the work is still needed.",
+            Self::ConnectFailed { .. } => "Check network reachability, then retry.",
         }
     }
 
     pub fn to_json(&self) -> Value {
-        let message =
-            crate::projection::cap(&crate::projection::sanitize(&self.to_string()), 500).0;
+        let redacted = redact_paths(&self.to_string());
+        let message = crate::projection::cap(&crate::projection::sanitize(&redacted), 500).0;
         let mut body = serde_json::Map::new();
         body.insert("code".to_owned(), json!(self.code()));
         body.insert("message".to_owned(), json!(message));
@@ -192,6 +212,21 @@ impl From<url::ParseError> for Error {
     }
 }
 
+fn redact_paths(text: &str) -> String {
+    text.split(' ')
+        .map(|token| {
+            if token.starts_with('/') || token.starts_with("~/") {
+                let trimmed = token.trim_end_matches([':', ')', ',', '.']);
+                let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+                token.replace(trimmed, name)
+            } else {
+                token.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn redact_url_queries(text: &str) -> String {
     let mut redacted_text = String::with_capacity(text.len());
     let mut rest = text;
@@ -224,6 +259,21 @@ mod tests {
         );
         assert!(text.contains("?<redacted>)"));
         assert!(!text.contains("dhaka"));
+    }
+
+    #[test]
+    fn a_client_facing_message_keeps_only_the_file_name() {
+        let error = Error::Ledger(
+            "hash chain broken at sequence 4 in /home/someone/.local/share/ownserp/ledger/calls.jsonl"
+                .to_owned(),
+        );
+        let body = error.to_json();
+        let message = body
+            .get("message")
+            .and_then(Value::as_str)
+            .expect("message");
+        assert!(!message.contains("/home/"), "{message}");
+        assert!(message.contains("calls.jsonl"), "{message}");
     }
 
     #[test]
@@ -277,8 +327,31 @@ mod tests {
     }
 
     #[test]
-    fn a_rejected_or_rate_limited_error_is_unbilled() {
-        for status in [400, 401, 403, 404, 429] {
+    fn a_busy_ledger_and_a_bad_request_carry_their_own_advice() {
+        let busy = Error::LedgerBusy("held".to_owned());
+        assert_eq!(busy.code(), "serper.internal_error");
+        assert!(busy.remedy().contains("Another ownserp process"));
+
+        let bad_request = Error::Upstream {
+            status: 400,
+            message: String::new(),
+        };
+        assert_eq!(bad_request.code(), "serper.bad_request");
+        let unprocessable = Error::Upstream {
+            status: 422,
+            message: String::new(),
+        };
+        assert_eq!(unprocessable.code(), "serper.bad_request");
+
+        let disk_remedy = Error::Ledger("broken".to_owned()).remedy();
+        let json = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid json");
+        assert_ne!(Error::from(json).remedy(), disk_remedy);
+        assert_ne!(Error::Projection("shape".to_owned()).remedy(), disk_remedy);
+    }
+
+    #[test]
+    fn a_rejected_redirected_or_rate_limited_error_is_unbilled() {
+        for status in [301, 302, 400, 401, 403, 404, 422, 429] {
             let error = Error::Upstream {
                 status,
                 message: String::new(),
@@ -295,19 +368,34 @@ mod tests {
     }
 
     #[test]
-    fn a_server_error_timeout_or_cancel_stays_billed() {
-        for status in [500, 502, 503] {
+    fn a_server_error_is_unbilled() {
+        for status in [500, 502, 503, 504] {
             let error = Error::Upstream {
                 status,
                 message: String::new(),
             };
-            assert!(!error.is_unbilled(), "status {status} may have been billed");
+            assert!(
+                error.is_unbilled(),
+                "status {status} must count as unbilled"
+            );
         }
+    }
+
+    #[test]
+    fn a_timeout_cancel_or_bad_body_stays_billed() {
         let network = Error::network("calling Serper", std::io::Error::other("timed out"));
         assert!(!network.is_unbilled(), "a timeout may have been billed");
         assert!(
             !Error::Cancelled.is_unbilled(),
             "a cancel may have been billed"
+        );
+        let answered_with_a_bad_body = Error::Upstream {
+            status: 200,
+            message: String::new(),
+        };
+        assert!(
+            !answered_with_a_bad_body.is_unbilled(),
+            "a 2xx body that will not parse was still billed"
         );
         let json = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid json");
         assert!(

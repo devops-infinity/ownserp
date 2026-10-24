@@ -80,13 +80,13 @@ pub const SPECS: &[ToolSpec] = &[
         name: "serper_lens",
         title: "Reverse image search",
         endpoint: Some(Endpoint::Lens),
-        description: "Reverse image search for a public image URL, returning visual matches. Use it when a picture itself is the query. Costs 3 credits; batch is not supported.",
+        description: "Reverse image search for a public image URL, returning visual matches. Use it when a picture itself is the query. Batch is not supported.",
     },
     ToolSpec {
         name: "serper_scrape",
         title: "Extract page content",
         endpoint: Some(Endpoint::Scrape),
-        description: "Extract readable content from one public page as Markdown or text, optionally with images, links, and videos. Use it after a search returns a URL worth reading.",
+        description: "Extract readable content from one public page as Markdown, plus text when it differs from the Markdown, optionally with images, links, and videos. Use it after a search returns a URL worth reading.",
     },
     ToolSpec {
         name: "serper_locations",
@@ -129,7 +129,7 @@ pub(crate) fn cost_sentence(spec: &ToolSpec) -> String {
     match spec.name {
         "serper_images" => "Costs 1 credit, doubling to 2 when num exceeds 10.".to_owned(),
         "serper_scrape" => {
-            "Costs 2, 6, or 10 credits by page difficulty, while the response reports the actual figure.".to_owned()
+            "Costs 2, 6, or 10 credits by page difficulty, while the response reports the actual figure. The session budget reserves 10 credits before the call.".to_owned()
         }
         "serper_search_batch" => "Every query costs three times its single price.".to_owned(),
         "serper_locations" | "serper_session" | "serper_health" => "Free.".to_owned(),
@@ -143,5 +143,20 @@ pub(crate) fn cost_sentence(spec: &ToolSpec) -> String {
                 other => format!("Costs {other} credits."),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_lens_description_states_its_price_once() {
+        let spec = SPECS
+            .iter()
+            .find(|spec| spec.name == "serper_lens")
+            .expect("lens spec");
+        assert!(!spec.description.contains("Costs 3 credits"));
+        assert!(cost_sentence(spec).contains("Costs 3 credits"));
     }
 }

@@ -84,12 +84,22 @@ impl SerperClient {
         body: &Value,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
+        self.post_many(endpoint, body, 1, cancellation).await
+    }
+
+    pub async fn post_many(
+        &self,
+        endpoint: Endpoint,
+        body: &Value,
+        permits: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
         let url = format!("{}{}", self.base_for(endpoint.host()), endpoint.path());
         let bytes = serde_json::to_vec(body).map_err(|error| Error::Json {
             context: "encoding the request body",
             source: error,
         })?;
-        self.send_with_retry(cancellation, || {
+        self.send_with_retry(permits, cancellation, || {
             let mut request = self
                 .http
                 .post(&url)
@@ -120,7 +130,7 @@ impl SerperClient {
             }
         }
         let requires_key = endpoint.requires_key();
-        self.send_with_retry(cancellation, || {
+        self.send_with_retry(1, cancellation, || {
             let mut request = self.http.get(url.clone());
             if requires_key
                 && self.attach_key
@@ -150,7 +160,7 @@ impl SerperClient {
         serde_json::from_slice(&bytes).ok()
     }
 
-    pub async fn live_balance(&self) -> Option<u64> {
+    pub async fn account_probe(&self) -> Option<(u16, Option<u64>)> {
         let api_key = self.api_key.as_ref().filter(|_| self.attach_key)?;
         let url = format!("{}/account", self.base_for(Host::Google));
         wait_for_permit(&self.limiter).await?;
@@ -162,18 +172,26 @@ impl SerperClient {
             .send()
             .await
             .ok()?;
-        if !response.status().is_success() {
-            return None;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Some((status, None));
         }
         let (_, bytes) = read_capped(response).await.ok()?;
         let body: Value = serde_json::from_slice(&bytes).ok()?;
-        body.get("credits")
+        let credits = body
+            .get("credits")
             .or_else(|| body.get("balance"))
-            .and_then(Value::as_u64)
+            .and_then(Value::as_u64);
+        Some((status, credits))
+    }
+
+    pub async fn live_balance(&self) -> Option<u64> {
+        self.account_probe().await.and_then(|(_, credits)| credits)
     }
 
     async fn send_with_retry<F>(
         &self,
+        permits: usize,
         cancellation: &CancellationToken,
         build_request: F,
     ) -> Result<Value>
@@ -183,7 +201,11 @@ impl SerperClient {
         let mut attempt = 0u32;
         loop {
             attempt = attempt.saturating_add(1);
-            self.acquire(cancellation).await?;
+            match self.acquire_permits(permits, cancellation).await {
+                Ok(()) => {}
+                Err(_) if attempt == 1 => return Err(Error::CancelledBeforeSend),
+                Err(error) => return Err(error),
+            }
             let sent = tokio::select! {
                 result = build_request().send() => result,
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
@@ -204,18 +226,23 @@ impl SerperClient {
                         pause(attempt, cancellation).await?;
                         continue;
                     }
+                    if error.is_connect() {
+                        return Err(Error::ConnectFailed {
+                            message: "the connection was never established".to_owned(),
+                        });
+                    }
                     return Err(Error::network("calling Serper", error));
                 }
             }
         }
     }
 
-    pub async fn acquire_queries(
+    async fn acquire_permits(
         &self,
-        query_count: usize,
+        permits: usize,
         cancellation: &CancellationToken,
     ) -> Result<()> {
-        for _ in 0..query_count.max(1) {
+        for _ in 0..permits.max(1) {
             self.acquire(cancellation).await?;
         }
         Ok(())
@@ -307,9 +334,15 @@ async fn read_response(response: Response) -> Result<Value> {
         .unwrap_or_else(|| status_text(code));
     let (message, _) =
         crate::projection::cap(&crate::projection::sanitize(raw), MAX_ERROR_MESSAGE_CHARS);
-    if code == 429 {
+    let exhausted = code == 400 && message.to_lowercase().contains("not enough credits");
+    if code == 429 || exhausted {
         return Err(Error::RateLimited { message });
     }
+    let message = if (300..400).contains(&code) {
+        format!("{message} (a redirect, which is not followed)")
+    } else {
+        message.to_owned()
+    };
     Err(Error::Upstream {
         status: code,
         message,
