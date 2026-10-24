@@ -13,6 +13,8 @@ BUMP=""
 DRY_RUN=0
 MAKE_TAG=0
 DIST_DIR="$REPO/dist"
+STAGE=""
+trap 'if [[ -n "$STAGE" ]]; then rm -rf "$STAGE"; fi' EXIT
 
 usage() {
 	cat <<'USAGE'
@@ -174,8 +176,8 @@ package() {
 	"$REPO/tools/verify.sh"
 	cargo build --release --locked --bin ownserp
 	mkdir -p "$DIST_DIR"
-	stage="$(mktemp -d)"
-	trap 'rm -rf "$stage"' EXIT
+	STAGE="$(mktemp -d)"
+	stage="$STAGE"
 	install -m 0755 target/release/ownserp "$stage/ownserp"
 	cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE server.json "$stage/"
 	mkdir -p "$stage/mcpb"
