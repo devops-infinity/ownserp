@@ -48,6 +48,16 @@ git push origin main
 git push origin vX.Y.Z
 ```
 
+## npm without one-time codes
+
+npm asks for a one-time code on every publish when the account has two-factor authentication and the stored credential is an interactive login. Replace that once with a granular token that bypasses it:
+
+1. Open https://www.npmjs.com/settings/sharkar/tokens, choose Generate New Token, then Granular Access Token.
+2. Allow read and write for the `@devops-infinity` scope, and tick "Bypass two-factor authentication".
+3. Run `tools/npm-auth-setup.sh` and paste the token. It is read with echo off, written to your user npmrc with owner-only permissions, and never printed.
+
+After that, `tools/publish-npm.sh` publishes the loader package and verifies that the registry answers with the same version. It refuses when `packages/npm` and the workspace disagree on the version, and it names the fix when npm still answers with EOTP.
+
 ## Install or reinstall locally
 
 ```bash
