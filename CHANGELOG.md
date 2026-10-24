@@ -6,12 +6,27 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Added
+
+- `OWN_SERPER_PER_CALL_CREDIT_CEILING` and `OWN_SERPER_SESSION_BUDGET_CREDITS` set the two spending limits from the environment, so a container can carry them without a profile.
+- `ownserp config show` accepts `--profile` and `--ledger-dir`.
+- A knowledge graph, answer box, or people-also-ask object carries a `truncated` marker when one of its text fields was cut.
+
 ### Changed
 
 - A call that Serper answers with a 5xx status or a redirect is now recorded at zero credits, because ADR 0002 says only successful calls are billed. A timeout or a cancel keeps the estimate.
 - A lock wait that runs out of time no longer marks the ledger broken for the rest of the process. The call fails with a busy error and the next one tries again.
 - An upstream 400 or 422 now reports `serper.bad_request`, and a JSON parse or shaping failure carries its own remedy instead of advice to check disk space.
 - `LedgerRow`, `Reservation`, and `ToolTotals` are re-exported from `ownserp-core`.
+- A batch takes its full rate-limit permit count on every attempt, including a retry, so a 100-query batch no longer slips past the ceiling.
+- The HTTP request deadline follows `request_timeout_secs` and cancels the call so its row is written, and shutdown cancels in-flight work and waits briefly for the ledger.
+- A cancel before the request leaves and a failed connect are recorded at zero credits.
+- A scrape keeps its line breaks, headings, lists, and code blocks.
+- The result budget shrinks secondary sections before it drops paid results, keeps the largest prefix that fits, and keeps the paging token.
+- `hl` accepts regional codes such as `zh-cn` and `pt-br`.
+- A connection that sends no header within ten seconds is dropped, so idle sockets cannot hold every connection slot.
+- A batch entry that carries an upstream message or status code now reports it instead of showing an empty success.
+- Client-facing ledger errors name the file without its full path, and `ownserp doctor` reports a rejected key and exits 1.
 
 ### Fixed
 
@@ -21,6 +36,14 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - A 400 answer that says the balance is empty now reports `serper.rate_limited`, so an agent stops retrying against an exhausted account.
 - The API key is trimmed when it is read, so a CRLF from a `.env` file no longer makes every request fail.
 - `ownserp audit rotate` re-checks the ledger file after taking its lock, so a rotate that lost the race cannot archive the wrong file, and the rename is made durable.
+- A paid call whose row cannot be written waits in a bounded queue and is written on the next append, instead of being lost.
+- Dropping a reservation no longer waits on the ledger lock, and a call that is already in the chain no longer holds its share of the budget twice.
+- `ownserp audit verify` reports a missing ledger, a damaged tail, and a gap in the sequence instead of passing them.
+- The ledger open refuses a symlinked file, and a file that holds something other than a ledger is refused instead of cut to zero bytes.
+- Ledger reads and budget reservations no longer run on the async thread.
+- The profile version is checked before its keys, an unresolvable default directory is an error, and the keychain error names its cause.
+- The bearer scheme is case-insensitive, Host entries compare ports and case, an Origin on a protected route is refused, and a token that can never be sent is refused at startup.
+- The release tooling writes the new changelog heading in the right place, runs the strict gate before a tag, fills a draft release before publishing it, syntax-checks every shell file, and passes the tag through the environment.
 
 ### Removed
 
@@ -237,3 +260,17 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - The `search-api` keyword, which replaces `model-context-protocol` because crates.io rejects a keyword above 20 characters.
 - The workspace README in both packages, so crates.io renders it.
 - A registry manifest, a bundle manifest, and a Dockerfile.
+
+[Unreleased]: https://github.com/devops-infinity/ownserp/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/devops-infinity/ownserp/compare/v1.3.0...v1.3.1
+[1.3.0]: https://github.com/devops-infinity/ownserp/compare/v1.2.1...v1.3.0
+[1.2.1]: https://github.com/devops-infinity/ownserp/compare/v1.2.0...v1.2.1
+[1.2.0]: https://github.com/devops-infinity/ownserp/compare/v1.1.0...v1.2.0
+[1.1.0]: https://github.com/devops-infinity/ownserp/compare/v1.0.0...v1.1.0
+[1.0.0]: https://github.com/devops-infinity/ownserp/compare/v0.1.5...v1.0.0
+[0.1.5]: https://github.com/devops-infinity/ownserp/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/devops-infinity/ownserp/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/devops-infinity/ownserp/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/devops-infinity/ownserp/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/devops-infinity/ownserp/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/devops-infinity/ownserp/releases/tag/v0.1.0

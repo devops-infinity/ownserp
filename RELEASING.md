@@ -107,6 +107,17 @@ tools/reinstall.sh --skip-gate --dir /usr/local/bin
 
 `tools/verify.sh` is the same set the release runs: shell syntax, shellcheck, shfmt, `cargo fmt --check`, check, clippy with warnings denied, tests, doc tests, docs, `cargo audit` with the three reasoned suppressions, `cargo deny check`, `cargo machete`, and a `gitleaks` scan of the tree and of the commit history. Run it before any push.
 
+## Check the library API before a tag
+
+`ownserp-core` is a published library. Before a tag, compare it with the previous release and read what changed:
+
+```bash
+cargo install cargo-semver-checks
+cargo semver-checks check-release --baseline-rev v<previous>
+```
+
+The README states that the Rust API of `ownserp-core` is not covered by the semantic version promise, which covers the command line, the profile schema, the ledger format, and the tool result shape. A failure here is therefore expected when a release renames or adds a public item; record it in the changelog as breaking rather than treating it as an error.
+
 ## What a release does not do
 
 - It does not run the release workflow. Pushing the tag does that.
