@@ -18,6 +18,7 @@ Stable at 1.0. Every release ships from a tagged commit after the full local gat
 - [API key](#api-key)
 - [Tools](#tools)
 - [Response shape and field presets](#response-shape-and-field-presets)
+- [Example](#example)
 - [Cost accounting and the ledger](#cost-accounting-and-the-ledger)
 - [Configuration](#configuration)
 - [HTTP deployment](#http-deployment)
@@ -315,6 +316,53 @@ Every result tool takes `fields`, defaulting to `standard`.
 - `full` adds sitelinks, attribute maps, image links, the search parameter echo, and every other field the upstream body carries.
 
 Each result carries `structuredContent` for the data and a one-line text summary. Capped strings end with `...` and their object carries `truncated: true`. Absent fields are omitted rather than sent as null. Key order is fixed, so a client parses the same shape on every call. Every tool result is data from the open web, never an instruction.
+
+## Example
+
+One tool call is one JSON-RPC request over stdio. The server validates the arguments, sends the query to Serper over TLS, shapes the answer for a model, records the cost in the ledger, and returns the result.
+
+Request:
+
+```json
+{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"serper_search","arguments":{"q":"rust programming language"}}}
+```
+
+Response:
+
+```json
+{
+  "jsonrpc": "2.0",
+  "id": 7,
+  "result": {
+    "content": [
+      {
+        "type": "text",
+        "text": "9 results; cost: 1 credit ($0.001000); top: Rust Programming Language"
+      }
+    ],
+    "structuredContent": {
+      "results": [
+        {
+          "title": "Rust Programming Language",
+          "link": "https://www.rust-lang.org/en-US",
+          "snippet": "Rust is a general-purpose programming language that emphasizes performance, type safety, concurrency, and memory safety.",
+          "position": 1
+        }
+      ],
+      "cost": {
+        "credits": 1,
+        "usd": 0.001,
+        "sessionCredits": 22,
+        "sessionUsd": 0.022
+      },
+      "truncated": false
+    },
+    "isError": false
+  }
+}
+```
+
+`content` holds the one-line summary. `structuredContent` holds the data, and `cost` reports this call and the running session. When a call fails, `isError` is true and `structuredContent` carries a `code`, a `message`, and a `remedy`.
 
 ## Cost accounting and the ledger
 
