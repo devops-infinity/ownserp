@@ -84,12 +84,22 @@ impl SerperClient {
         body: &Value,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
+        self.post_many(endpoint, body, 1, cancellation).await
+    }
+
+    pub async fn post_many(
+        &self,
+        endpoint: Endpoint,
+        body: &Value,
+        permits: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<Value> {
         let url = format!("{}{}", self.base_for(endpoint.host()), endpoint.path());
         let bytes = serde_json::to_vec(body).map_err(|error| Error::Json {
             context: "encoding the request body",
             source: error,
         })?;
-        self.send_with_retry(cancellation, || {
+        self.send_with_retry(permits, cancellation, || {
             let mut request = self
                 .http
                 .post(&url)
@@ -120,7 +130,7 @@ impl SerperClient {
             }
         }
         let requires_key = endpoint.requires_key();
-        self.send_with_retry(cancellation, || {
+        self.send_with_retry(1, cancellation, || {
             let mut request = self.http.get(url.clone());
             if requires_key
                 && self.attach_key
@@ -174,6 +184,7 @@ impl SerperClient {
 
     async fn send_with_retry<F>(
         &self,
+        permits: usize,
         cancellation: &CancellationToken,
         build_request: F,
     ) -> Result<Value>
@@ -183,7 +194,7 @@ impl SerperClient {
         let mut attempt = 0u32;
         loop {
             attempt = attempt.saturating_add(1);
-            self.acquire(cancellation).await?;
+            self.acquire_permits(permits, cancellation).await?;
             let sent = tokio::select! {
                 result = build_request().send() => result,
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
@@ -210,12 +221,12 @@ impl SerperClient {
         }
     }
 
-    pub async fn acquire_queries(
+    async fn acquire_permits(
         &self,
-        query_count: usize,
+        permits: usize,
         cancellation: &CancellationToken,
     ) -> Result<()> {
-        for _ in 0..query_count.max(1) {
+        for _ in 0..permits.max(1) {
             self.acquire(cancellation).await?;
         }
         Ok(())

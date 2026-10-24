@@ -6,7 +6,7 @@ An MCP server for the Serper.dev search API, with per-call credit accounting.
 
 ## Status
 
-Stable at 1.0. Every release ships from a tagged commit after the full local gate passes. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
+Stable at 1.0. Every release ships from a tagged commit after the full local gate passes. The semantic version promise covers the command line, the profile schema, the ledger format, and the tool result shape. The Rust API of the `ownserp-core` crate is not covered by it, so a minor release may rename a public item there. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
 
 ## Contents
 

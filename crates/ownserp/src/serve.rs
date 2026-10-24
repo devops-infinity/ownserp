@@ -56,7 +56,8 @@ mod tests {
             .enable_all()
             .build()
             .expect("runtime");
-        runtime.spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(5)));
+        let _blocking =
+            runtime.spawn_blocking(|| std::thread::sleep(std::time::Duration::from_secs(5)));
         let started = std::time::Instant::now();
         block_on_and_stop(runtime, async { Ok(()) }).expect("shutdown");
         assert!(started.elapsed() < std::time::Duration::from_secs(2));

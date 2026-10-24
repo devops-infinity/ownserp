@@ -42,6 +42,7 @@ fn read_key(reader: impl Read) -> anyhow::Result<String> {
         .map_err(|_| anyhow::anyhow!("the key on stdin is not valid UTF-8"))?;
     let cleaned = clean_key(raw);
     buffer.fill(0);
+    let _ = std::hint::black_box(&buffer);
     cleaned
 }
 

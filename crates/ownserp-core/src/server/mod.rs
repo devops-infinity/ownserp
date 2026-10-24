@@ -217,16 +217,12 @@ where
         }
     };
     tokio::select! {
-        result = &mut call => result,
-        () = shutdown.cancelled() => {
-            cancellation.cancel();
-            cancel_wait(&mut call).await
-        }
-        () = deadline => {
-            cancellation.cancel();
-            cancel_wait(&mut call).await
-        }
+        result = &mut call => return result,
+        () = shutdown.cancelled() => {}
+        () = deadline => {}
     }
+    cancellation.cancel();
+    cancel_wait(&mut call).await
 }
 
 async fn cancel_wait<F>(call: &mut Pin<&mut F>) -> rmcp::model::CallToolResult

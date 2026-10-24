@@ -793,11 +793,12 @@ async fn batch(
         .saturating_mul(BATCH_MULTIPLIER);
     let mut _reservation = reserve_budget(ctx, total).await?;
     let body = Value::Array(bodies);
-    ctx.client
-        .acquire_queries(args.queries.len(), cancellation)
-        .await?;
     let started = Instant::now();
-    let raw = match ctx.client.post(endpoint, &body, cancellation).await {
+    let raw = match ctx
+        .client
+        .post_many(endpoint, &body, args.queries.len(), cancellation)
+        .await
+    {
         Ok(raw) => raw,
         Err(error) => {
             append_failure(

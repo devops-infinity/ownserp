@@ -21,6 +21,10 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - The API key is trimmed when it is read, so a CRLF from a `.env` file no longer makes every request fail.
 - `ownserp audit rotate` re-checks the ledger file after taking its lock, so a rotate that lost the race cannot archive the wrong file, and the rename is made durable.
 
+### Removed
+
+- The repository no longer ships a project `.mcp.json`, so Claude Code does not pick up a server configuration from a checkout of this repository.
+
 ## [1.3.1] - 2026-10-25
 
 ### Fixed
@@ -37,7 +41,7 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - `serper_session` reports the credits written by every process, and `session_budget_credits` counts all of them. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the running process count times the per-call credit ceiling.
 - `ownserp audit rotate` no longer refuses while a server runs. A running server notices the new file and starts a fresh chain on its next write.
 - `args.key` is created by linking a temporary file into place, so several processes starting at once read one key instead of the last one to rename its own.
-- Five public items in `ownserp-core` changed name: `usd_for` is now `usd_for_call`, `PackTier::usd_per_thousand` is now `usd_per_1k`, `MapViewport::as_query` is now `as_str`, `NAME` is now `APP_NAME`, and `SerperClient::has_key` is now `has_api_key`. Code that calls those items needs the new names. The ledger file format and the chain hash did not change, so an existing `calls.jsonl` still verifies and keeps growing.
+- **Breaking:** five public items in `ownserp-core` changed name: `usd_for` is now `usd_for_call`, `PackTier::usd_per_thousand` is now `usd_per_1k`, `MapViewport::as_query` is now `as_str`, `NAME` is now `APP_NAME`, and `SerperClient::has_key` is now `has_api_key`. Code that calls those items needs the new names. The ledger file format and the chain hash did not change, so an existing `calls.jsonl` still verifies and keeps growing.
 
 ## [1.2.1] - 2026-10-25
 
