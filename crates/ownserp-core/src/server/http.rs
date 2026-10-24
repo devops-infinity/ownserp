@@ -40,6 +40,7 @@ use crate::error::{Error, Result};
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_ID: usize = 128;
 const MIN_TOKEN_CHARS: usize = 32;
+const HEADER_READ_SECS: u64 = 10;
 const MAX_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_REQUESTS: usize = 128;
 const BODY_DEADLINE_SECS: u64 = 30;
@@ -232,6 +233,8 @@ struct LimitedListener {
 struct LimitedStream {
     inner: TcpStream,
     _permit: OwnedSemaphorePermit,
+    header_deadline: std::time::Instant,
+    started: bool,
 }
 
 impl Listener for LimitedListener {
@@ -253,6 +256,9 @@ impl Listener for LimitedListener {
                         LimitedStream {
                             inner: stream,
                             _permit: permit,
+                            header_deadline: std::time::Instant::now()
+                                + std::time::Duration::from_secs(HEADER_READ_SECS),
+                            started: false,
                         },
                         address,
                     );
@@ -276,7 +282,29 @@ impl AsyncRead for LimitedStream {
         context: &mut Context<'_>,
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
-        Pin::new(&mut self.get_mut().inner).poll_read(context, buffer)
+        let this = self.get_mut();
+        if this.started {
+            return Pin::new(&mut this.inner).poll_read(context, buffer);
+        }
+        match Pin::new(&mut this.inner).poll_read(context, buffer) {
+            Poll::Ready(Ok(())) => {
+                this.started = true;
+                Poll::Ready(Ok(()))
+            }
+            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
+            Poll::Pending => {
+                let mut deadline = Box::pin(tokio::time::sleep_until(
+                    tokio::time::Instant::from_std(this.header_deadline),
+                ));
+                match deadline.as_mut().poll(context) {
+                    Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
+                        std::io::ErrorKind::TimedOut,
+                        "the request header did not arrive in time",
+                    ))),
+                    Poll::Pending => Poll::Pending,
+                }
+            }
+        }
     }
 }
 
