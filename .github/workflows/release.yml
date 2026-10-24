@@ -22,7 +22,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Check out the tag
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
 
@@ -43,7 +43,7 @@ jobs:
         run: |
           cargo install --locked cargo-dist --version 0.32.0
           cargo install --locked cargo-zigbuild --version 0.24.0
-          cargo install --locked cargo-xwin
+          cargo install --locked cargo-xwin --version 0.23.1
           brew install zig
 
       - name: Build every target
