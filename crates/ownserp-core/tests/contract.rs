@@ -654,6 +654,45 @@ async fn reviews_reserves_its_price_once() {
 }
 
 #[tokio::test]
+async fn a_failed_call_charges_its_estimate() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
+        .mount(&server)
+        .await;
+    let ctx = context("failure-charge", &server.uri(), 0);
+    let failed = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&arguments(json!({"q": "x"}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(code(&result_json(&failed)), Some("serper.upstream_failed"));
+
+    let session = call_tool(
+        &ctx,
+        "serper_session",
+        Some(&arguments(json!({}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    let body = result_json(&session);
+    assert_eq!(
+        body.pointer("/structuredContent/credits")
+            .and_then(Value::as_u64),
+        Some(1),
+        "a failed call must still charge its estimate"
+    );
+    assert_eq!(
+        body.pointer("/structuredContent/calls")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+}
+
+#[tokio::test]
 async fn every_search_family_tool_projects_its_own_section() {
     let cases = vec![
         (
