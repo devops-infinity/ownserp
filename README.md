@@ -82,7 +82,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://github.com/devops-infinity/ow
 ### Release archive
 
 ```sh
-VERSION=1.3.1
+VERSION=2.0.0
 BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
 TARGET=x86_64-unknown-linux-gnu
 curl -LO "$BASE/ownserp-$TARGET.tar.gz"

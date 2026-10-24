@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-10-25
+
 ### Added
 
 - `OWN_SERPER_PER_CALL_CREDIT_CEILING` and `OWN_SERPER_SESSION_BUDGET_CREDITS` set the two spending limits from the environment, so a container can carry them without a profile.
@@ -18,9 +20,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - A lock wait that runs out of time no longer marks the ledger broken for the rest of the process. The call fails with a busy error and the next one tries again.
 - An upstream 400 or 422 now reports `serper.bad_request`, and a JSON parse or shaping failure carries its own remedy instead of advice to check disk space.
 - `LedgerRow`, `Reservation`, and `ToolTotals` are re-exported from `ownserp-core`.
-- A batch takes its full rate-limit permit count on every attempt, including a retry, so a 100-query batch no longer slips past the ceiling.
 - The HTTP request deadline follows `request_timeout_secs` and cancels the call so its row is written, and shutdown cancels in-flight work and waits briefly for the ledger.
-- A cancel before the request leaves and a failed connect are recorded at zero credits.
+- A failed connect is recorded at zero credits.
 - A scrape keeps its line breaks, headings, lists, and code blocks.
 - The result budget shrinks secondary sections before it drops paid results, keeps the largest prefix that fits, and keeps the paging token.
 - `hl` accepts regional codes such as `zh-cn` and `pt-br`.
@@ -32,6 +33,7 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 - A scholar result's year is now read when Serper sends it as a number, and a review's author is read from `user.name`, which is where the live API puts it. Both fields used to come back empty.
 - A cache entry larger than the byte cap no longer empties the cache, and a poisoned cache lock is recovered instead of failing every later call.
+- The response cache eviction queue no longer grows without bound when entries are replaced or expire.
 - A scrape whose response carries no credit figure is now booked with no actual credits and the 10-credit estimate, instead of recording 2 as if it were the real price.
 - A 400 answer that says the balance is empty now reports `serper.rate_limited`, so an agent stops retrying against an exhausted account.
 - The API key is trimmed when it is read, so a CRLF from a `.env` file no longer makes every request fail.
@@ -48,6 +50,9 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 ### Removed
 
 - The repository no longer ships a project `.mcp.json`, so Claude Code does not pick up a server configuration from a checkout of this repository.
+- **Breaking:** removed the client-side QPS limit and the HTTP inbound rate limit, so requests to Serper are no longer throttled locally.
+- **Breaking:** removed the `--qps` flag and the `qps` and `http_qps` profile keys and environment variables. A profile that still carries either key now fails to load.
+- Removed the `QpsLimit`, `PackTier::qps()`, and `CancelledBeforeSend` public items from `ownserp-core`.
 
 ## [1.3.1] - 2026-10-25
 
@@ -273,3 +278,5 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 [0.1.2]: https://github.com/devops-infinity/ownserp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/devops-infinity/ownserp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/devops-infinity/ownserp/releases/tag/v0.1.0
+
+[2.0.0]: https://github.com/devops-infinity/ownserp/compare/v1.3.1...v2.0.0
