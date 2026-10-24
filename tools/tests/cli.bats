@@ -28,6 +28,12 @@ setup() {
 	[[ "$output" == *"bump first"* ]]
 }
 
+@test "release refuses package and tag in one pass" {
+	run "$REPO/tools/release.sh" --package --tag --dry-run
+	[ "$status" -ne 0 ]
+	[[ "$output" == *"runs after --package"* ]]
+}
+
 @test "reinstall help exits zero" {
 	run "$REPO/tools/reinstall.sh" --help
 	[ "$status" -eq 0 ]

@@ -23,6 +23,7 @@ use secrecy::ExposeSecret;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::Semaphore;
+use tower_http::timeout::RequestBodyDeadlineLayer;
 use tracing::Instrument;
 
 use super::{Metrics, OwnserpHandler, shutdown_signal};
@@ -34,6 +35,7 @@ const MAX_REQUEST_ID: usize = 128;
 const MIN_TOKEN_CHARS: usize = 32;
 const MAX_CONCURRENT_REQUESTS: usize = 128;
 const REQUEST_TIMEOUT_SECS: u64 = 120;
+const BODY_DEADLINE_SECS: u64 = 30;
 const SHUTDOWN_GRACE_SECS: u64 = 10;
 
 type HttpLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
@@ -123,6 +125,9 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .layer(middleware::from_fn_with_state(
             state.clone(),
             assign_request_id,
+        ))
+        .layer(RequestBodyDeadlineLayer::new(
+            std::time::Duration::from_secs(BODY_DEADLINE_SECS),
         ))
         .with_state(state);
     let app = Router::new()

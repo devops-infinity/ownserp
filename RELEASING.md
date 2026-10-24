@@ -42,23 +42,27 @@ git push -u origin release/prepare-X-Y-Z
 gh pr create --fill --base main
 ```
 
-3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh`, builds the release binary, and writes the archive and its checksum.
+3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh`, builds the host binary plus the aarch64, musl, and Windows targets with `cargo-zigbuild`, adds shell completions and the manual page, writes one archive and checksum per target, and stamps the host archive digest into the npm loader.
 
 ```bash
 git switch main && git pull
-tools/release.sh --package --tag
+tools/release.sh --package
 ```
 
-The output is `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256`, and the tag `vX.Y.Z`. Nothing is pushed.
+The output is one `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256` per target, and `packages/npm/bin/ownserp.js` now pins the host digest. Commit that stamp on a release branch, open a pull request, and merge it.
 
-4. Publish, on your order.
+4. Tag the merged commit, then publish, on your order.
 
 ```bash
+git switch main && git pull
+tools/release.sh --tag
+git push origin vX.Y.Z
 gh release create vX.Y.Z dist/ownserp-X.Y.Z-<target>.tar.gz dist/ownserp-X.Y.Z-<target>.tar.gz.sha256 \
   --title "OwnSERP X.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)
-git push origin main
-git push origin vX.Y.Z
+tools/publish-npm.sh
 ```
+
+The tag is created only when the loader pins the archive digest, so the tagged source and the published package agree. Nothing is pushed or published by the release script.
 
 ## npm without one-time codes
 

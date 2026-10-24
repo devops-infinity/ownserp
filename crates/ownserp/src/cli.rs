@@ -27,6 +27,13 @@ pub(crate) enum Command {
     Config(ConfigArgs),
     #[command(about = "Verify or rotate the call ledger")]
     Audit(AuditArgs),
+    #[command(about = "Print shell completions for a supported shell")]
+    Completions {
+        #[arg(value_enum, help = "Shell to generate completions for")]
+        shell: clap_complete::Shell,
+    },
+    #[command(about = "Print the manual page")]
+    Man,
 }
 
 #[derive(Debug, Args)]

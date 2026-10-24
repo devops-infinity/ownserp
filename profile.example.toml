@@ -1,3 +1,4 @@
+version = 1
 pack = "starter"
 usd_per_1k = 1.0
 qps = 50

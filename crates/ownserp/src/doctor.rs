@@ -1,4 +1,4 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use ownserp_core::{ApiKeySource, SerperClient, Settings};
 
 use crate::cli::DoctorArgs;
@@ -50,7 +50,7 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     }
     if settings.api_key_source() == ApiKeySource::Missing {
         emit("result: no API key; search tools will refuse until one is set")?;
-        return Ok(());
+        bail!("no API key; set SERPER_API_KEY or run ownserp config set-api-key");
     }
     let client = SerperClient::new(&settings).context("building the client")?;
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -59,6 +59,7 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
         .context("building the runtime")?;
     let (health, balance) =
         runtime.block_on(async { (client.health().await, client.live_balance().await) });
+    let reachable = health.is_some();
     match health {
         Some(body) => emit(&format!("serper api health: {body}"))?,
         None => emit("serper api health: no answer from api.serper.dev/health")?,
@@ -66,6 +67,9 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     match balance {
         Some(credits) => emit(&format!("account balance: {credits} credits"))?,
         None => emit("account balance: not reported; GET /account did not answer with a balance")?,
+    }
+    if !reachable {
+        bail!("api.serper.dev/health did not answer");
     }
     Ok(())
 }

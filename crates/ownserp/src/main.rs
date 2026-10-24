@@ -12,7 +12,8 @@
 use std::io::IsTerminal;
 use std::process::ExitCode;
 
-use clap::Parser;
+use anyhow::Context;
+use clap::{CommandFactory, Parser};
 
 mod audit;
 mod cli;
@@ -47,6 +48,14 @@ fn run(parsed: cli::Cli) -> anyhow::Result<()> {
         cli::Command::Doctor(args) => doctor::run(args),
         cli::Command::Config(args) => config::run(args),
         cli::Command::Audit(args) => audit::run(args),
+        cli::Command::Completions { shell } => {
+            let mut command = cli::Cli::command();
+            clap_complete::generate(shell, &mut command, "ownserp", &mut std::io::stdout());
+            Ok(())
+        }
+        cli::Command::Man => clap_mangen::Man::new(cli::Cli::command())
+            .render(&mut std::io::stdout())
+            .context("rendering the manual page"),
     }
 }
 

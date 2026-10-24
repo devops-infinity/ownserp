@@ -73,13 +73,14 @@ VERSION=0.1.5
 BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
-sha256sum "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
-cat "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
+sha256sum -c "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
 tar -xzf "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 install -m 0755 ownserp ~/.local/bin/ownserp
 ```
 
-The two hashes must match before the file is installed. Replace the target in both file names with `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, or `x86_64-pc-windows-gnu` for those platforms.
+Replace the target in both file names with `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, or `x86_64-pc-windows-gnu` for those platforms.
+
+The archive also carries `ownserp.bash`, `_ownserp` for zsh, `ownserp.fish`, and `ownserp.1`. Install them where your shell and manual reader look, under `~/.local/share/bash-completion/completions/`, a directory on `fpath`, `~/.config/fish/completions/`, and `~/.local/share/man/man1/`. You can print them on demand with `ownserp completions <shell>` and `ownserp man`.
 
 ### Container
 
@@ -97,7 +98,7 @@ Download `ownserp-<version>-x86_64-pc-windows-gnu.tar.gz` from the release page,
 
 ### MCPB bundle
 
-Download `ownserp-<version>-linux.mcpb` from the release page and open it in a client that supports MCP Bundles. The bundle asks for the API key and stores it in the OS keychain.
+Download `ownserp-<version>.mcpb` from the release page and open it in a client that supports MCP Bundles. The bundle asks for the API key and stores it in the OS keychain.
 
 ## Quick start
 
@@ -327,6 +328,7 @@ Environment variables:
 Profile file at `$XDG_CONFIG_HOME/ownserp/profile.toml`, or `~/.config/ownserp/profile.toml`. On Windows it is `%APPDATA%\ownserp\profile.toml` when `HOME` is unset:
 
 ```toml
+version = 1
 pack = "starter"
 usd_per_1k = 1.0
 qps = 50
@@ -341,6 +343,8 @@ bind = "127.0.0.1:8777"
 request_timeout_secs = 30
 http_qps = 0
 ```
+
+`version` is the profile schema version. It is 1 today, and a profile that names a newer version is refused by name.
 
 `ledger_dir` takes an absolute path. The file is a TOML document, so a `~` or a variable is stored literally rather than expanded.
 
@@ -359,7 +363,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
 
 ## Security
 
@@ -367,7 +371,7 @@ The server holds one API key, sends queries only to Serper over TLS, and sends n
 
 ## Troubleshooting
 
-Each error carries a stable code, a message, and a remedy. The codes and their fixes:
+Each error carries a stable code, a message, a remedy, and, for a network failure, up to three sanitized causes that name a DNS, TLS, or connection problem. `ownserp` exits 0 on success, 1 on a runtime failure, and 2 on a usage error. `ownserp doctor` exits 1 when no key is configured or when the Serper health probe fails; a balance the account endpoint does not report is printed but is not a failure. The codes and their fixes:
 
 - `serper.auth_missing`. No key is configured. Set `SERPER_API_KEY`, or run `ownserp config set-api-key`.
 - `serper.auth_failed`. Serper rejected the key. Check it at https://serper.dev/api-keys.
