@@ -8,8 +8,8 @@ Everything is prepared on this machine, and the release build runs on a macOS ru
 - The gate tools: `cargo install --locked cargo-audit cargo-deny cargo-machete`, plus `shellcheck`, `shfmt`, `gitleaks`, and `jq` from Homebrew.
 - cargo-dist 0.32.0, which builds the archives and installers: `cargo install --locked cargo-dist --version 0.32.0`.
 - minisign with the secret key at `~/.minisign/minisign.key`. The matching public key is `minisign.pub` at the repository root, and the release signs `sha256.sum` with it. Without the key the checksums ship unsigned with a warning.
-- The cross targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-unknown-linux-musl x86_64-pc-windows-gnu`.
-- The cross linkers: `cargo install --locked cargo-zigbuild`, plus `zig` and `zip` from Homebrew.
+- The cross targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-unknown-linux-musl x86_64-pc-windows-msvc`, plus `rustup component add llvm-tools-preview`.
+- The cross linkers: `cargo install --locked cargo-zigbuild cargo-xwin`, plus `zig` and `zip` from Homebrew.
 - `gh auth login` with push access to `devops-infinity/ownserp`, or `GITHUB_TOKEN` in the environment.
 - `CARGO_REGISTRY_TOKEN` in the environment for crates.io.
 - `MCP_GITHUB_TOKEN`, `GITHUB_PAT`, or `GITHUB_PERSONAL_ACCESS_TOKEN` with the `read:org` scope, so the MCP Registry login needs no browser.
@@ -54,7 +54,7 @@ git tag -a vX.Y.Z -m "OwnSERP X.Y.Z"
 git push origin vX.Y.Z
 ```
 
-The run is at https://github.com/devops-infinity/ownserp/actions/workflows/release.yml. It attaches one archive and checksum per target, the shell and PowerShell installers, `ownserp.rb`, `ownserp-npm-package.tar.gz`, `sha256.sum`, `source.tar.gz`, and the MCPB bundle. The Apple targets compile natively, and Linux and Windows cross-build with zig. When the `MINISIGN_KEY` repository secret is set, the workflow also signs `sha256.sum` and attaches `minisign.pub`.
+The run is at https://github.com/devops-infinity/ownserp/actions/workflows/release.yml. It attaches one archive and checksum per target, the shell and PowerShell installers, `ownserp.rb`, `ownserp-npm-package.tar.gz`, `sha256.sum`, `source.tar.gz`, and the MCPB bundle. The Apple targets compile natively; Linux cross-builds with zig, and Windows with cargo-xwin. When the `MINISIGN_KEY` repository secret is set, the workflow also signs `sha256.sum` and attaches `minisign.pub`.
 
 To build the same files locally instead, run `tools/release.sh --package` on macOS, then `tools/release.sh --tag`. A Linux host skips the Apple targets and refuses a partial set.
 
