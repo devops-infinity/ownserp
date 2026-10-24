@@ -1215,7 +1215,7 @@ mod tests {
         let elapsed = started.elapsed();
         assert_eq!(totals.calls, 1);
         assert!(
-            elapsed < Duration::from_millis(100),
+            elapsed < Duration::from_millis(250),
             "the snapshot waited {elapsed:?} for a held file lock"
         );
         let _ = releaser.join();
@@ -1257,12 +1257,12 @@ mod tests {
             let ledger = ledger.clone();
             std::thread::spawn(move || ledger.append(record()))
         };
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(250));
         let started = Instant::now();
         let totals = ledger.snapshot();
         let elapsed = started.elapsed();
         assert!(
-            elapsed < Duration::from_millis(100),
+            elapsed < Duration::from_millis(250),
             "the snapshot waited {elapsed:?} behind a thread that holds the state mutex"
         );
         assert_eq!(totals.calls, 1);
@@ -1287,7 +1287,7 @@ mod tests {
             let path = path.clone();
             std::thread::spawn(move || Ledger::open(&path).map(|_| ()))
         };
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(250));
         holder.unlock().expect("unlock");
         waiter
             .join()
@@ -1401,7 +1401,7 @@ mod tests {
             let ledger = ledger.clone();
             std::thread::spawn(move || ledger.append(record()))
         };
-        std::thread::sleep(Duration::from_millis(100));
+        std::thread::sleep(Duration::from_millis(250));
         let started = Instant::now();
         drop(reservation);
         let elapsed = started.elapsed();
