@@ -41,9 +41,10 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
   --package        require a clean tree, run tools/verify.sh, build the host
                    binary plus the aarch64, musl, and Windows targets, write
                    one archive and sha256 file per target, add shell
-                   completions and the manual page, and stamp the host archive
-                   digest into the npm loader. Commit that stamp before
-                   tagging. Needs cargo-zigbuild and zig.
+                   completions, the manual page, and the MCPB bundle, and
+                   stamp the host archive digest into the npm loader. Commit
+                   that stamp before tagging. Needs cargo-zigbuild, zig, and
+                   zip.
   --tag            require a clean tree and an archive whose digest the npm
                    loader already pins, then create vX.Y.Z at HEAD (signed
                    when user.signingkey is set); never pushed
@@ -263,6 +264,17 @@ package() {
 	tar -xzf "$archive" -C "$stage"
 	"$stage/ownserp" --version >/dev/null
 	say SUCCESS "the host archive unpacks and its binary runs"
+	[[ "$host" == *linux* ]] || die "the MCPB bundle needs a Linux host to build"
+	require_tool zip "run: brew install zip"
+	local bundle="$DIST_DIR/ownserp-$CURRENT.mcpb"
+	local bundle_stage="$STAGE/bundle"
+	mkdir -p "$bundle_stage/server"
+	cp mcpb/manifest.json "$bundle_stage/manifest.json"
+	install -m 0755 target/dist/ownserp "$bundle_stage/server/ownserp"
+	(cd "$bundle_stage" && zip -qr "$bundle" manifest.json server)
+	sha256_line_of "$bundle" >"$bundle.sha256"
+	say SUCCESS "wrote $bundle"
+	say SUCCESS "wrote $bundle.sha256"
 	loader="$REPO/packages/npm/bin/ownserp.js"
 	digest="$(sha256_of "$archive")"
 	if [[ -f "$loader" ]] && ! grep -q "const DIGEST = \"$digest\";" "$loader"; then
