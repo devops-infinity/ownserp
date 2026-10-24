@@ -91,7 +91,7 @@ tar -xzf "ownserp-$TARGET.tar.gz"
 install -m 0755 "ownserp-$TARGET/ownserp" ~/.local/bin/ownserp
 ```
 
-Set `TARGET` to `aarch64-apple-darwin` or `x86_64-apple-darwin` on macOS, `aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` on those platforms, and use the `.zip` file with `x86_64-pc-windows-gnu` on Windows.
+Set `TARGET` to `aarch64-apple-darwin` or `x86_64-apple-darwin` on macOS, `aarch64-unknown-linux-gnu` or `x86_64-unknown-linux-musl` or `aarch64-unknown-linux-musl` on those platforms, and use the `.zip` file with `x86_64-pc-windows-msvc` on Windows.
 
 The binary prints its shell completions and manual page on demand with `ownserp completions <shell>` and `ownserp man`. Install them where your shell and manual reader look, under `~/.local/share/bash-completion/completions/`, a directory on `fpath`, `~/.config/fish/completions/`, and `~/.local/share/man/man1/`.
 
@@ -115,7 +115,7 @@ The image serves Streamable HTTP and refuses a public bind without a bearer toke
 
 ### Windows
 
-Use the PowerShell installer above, or download `ownserp-x86_64-pc-windows-gnu.zip` from the release page, extract `ownserp.exe`, and put the folder on your PATH. A client configuration that cannot resolve the name uses the absolute path to `ownserp.exe`.
+Use the PowerShell installer above, or download `ownserp-x86_64-pc-windows-msvc.zip` from the release page, extract `ownserp.exe`, and put the folder on your PATH. A client configuration that cannot resolve the name uses the absolute path to `ownserp.exe`.
 
 ### MCPB bundle
 
