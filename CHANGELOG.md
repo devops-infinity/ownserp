@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-10-24
+
 ### Added
 
 - `ownserp completions <shell>` prints completions for bash, zsh, fish, elvish, and PowerShell, and `ownserp man` prints the manual page.

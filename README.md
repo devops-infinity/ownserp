@@ -69,7 +69,7 @@ Linux installs the release binary. macOS builds from source through the formula.
 ### Release archive
 
 ```sh
-VERSION=0.1.5
+VERSION=1.0.0
 BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
