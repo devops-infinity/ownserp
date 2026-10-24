@@ -26,8 +26,6 @@ use crate::tools::args::{
 };
 use crate::types::{Preset, TextMode};
 
-const SCRAPE_MAX_CREDITS: u32 = 10;
-
 pub struct ToolContext {
     pub client: SerperClient,
     pub settings: Settings,
@@ -646,8 +644,8 @@ async fn scrape(
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
     let body = args.body()?;
-    let credits = Endpoint::Scrape.base_cost().get();
-    let _reservation = reserve_budget(ctx, SCRAPE_MAX_CREDITS).await?;
+    let attempt = crate::cost::SCRAPE_RESERVATION_CREDITS;
+    let _reservation = reserve_budget(ctx, attempt).await?;
     let started = Instant::now();
     let raw = match ctx.client.post(Endpoint::Scrape, &body, cancellation).await {
         Ok(raw) => raw,
@@ -657,7 +655,7 @@ async fn scrape(
                 "serper_scrape",
                 Endpoint::Scrape.path(),
                 &body,
-                credits,
+                attempt,
                 started,
                 &error,
             )
@@ -667,7 +665,7 @@ async fn scrape(
     };
     let preset = args.preset();
     let content = projection::scrape_content(&raw, preset);
-    let actual = content.credits.unwrap_or(credits);
+    let actual = content.credits;
     let output = ScrapeOutput {
         markdown: content.markdown,
         text: content.text,
@@ -688,8 +686,8 @@ async fn scrape(
             tool: "serper_scrape".to_owned(),
             endpoint: Endpoint::Scrape.path().to_owned(),
             args_hash: args_hash(ctx.hash_key.as_ref(), &body),
-            credits_estimated: credits,
-            credits_actual: Some(actual),
+            credits_estimated: actual.unwrap_or(attempt),
+            credits_actual: actual,
             batch_multiplier: 1,
             duration_ms: elapsed_ms(started),
             status: "ok".to_owned(),
@@ -700,7 +698,7 @@ async fn scrape(
         },
     )
     .await;
-    let cost = cost_info(ctx, actual, None);
+    let cost = cost_info(ctx, actual.unwrap_or(attempt), None);
     set_cost(&mut payload, &cost)?;
     let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {

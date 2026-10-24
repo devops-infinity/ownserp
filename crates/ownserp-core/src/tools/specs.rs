@@ -129,7 +129,7 @@ pub(crate) fn cost_sentence(spec: &ToolSpec) -> String {
     match spec.name {
         "serper_images" => "Costs 1 credit, doubling to 2 when num exceeds 10.".to_owned(),
         "serper_scrape" => {
-            "Costs 2, 6, or 10 credits by page difficulty, while the response reports the actual figure.".to_owned()
+            "Costs 2, 6, or 10 credits by page difficulty, while the response reports the actual figure. The session budget reserves 10 credits before the call.".to_owned()
         }
         "serper_search_batch" => "Every query costs three times its single price.".to_owned(),
         "serper_locations" | "serper_session" | "serper_health" => "Free.".to_owned(),

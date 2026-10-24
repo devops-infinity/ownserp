@@ -307,7 +307,8 @@ async fn read_response(response: Response) -> Result<Value> {
         .unwrap_or_else(|| status_text(code));
     let (message, _) =
         crate::projection::cap(&crate::projection::sanitize(raw), MAX_ERROR_MESSAGE_CHARS);
-    if code == 429 {
+    let exhausted = code == 400 && message.to_lowercase().contains("not enough credits");
+    if code == 429 || exhausted {
         return Err(Error::RateLimited { message });
     }
     Err(Error::Upstream {

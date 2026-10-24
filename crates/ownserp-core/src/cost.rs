@@ -36,6 +36,7 @@ pub enum Endpoint {
 }
 
 pub const BATCH_MULTIPLIER: u32 = 3;
+pub(crate) const SCRAPE_RESERVATION_CREDITS: u32 = 10;
 
 impl Endpoint {
     pub const fn path(self) -> &'static str {

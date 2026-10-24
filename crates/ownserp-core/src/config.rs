@@ -117,7 +117,8 @@ impl Settings {
             )));
         }
         let api_key = env("SERPER_API_KEY")
-            .filter(|value| !value.trim().is_empty())
+            .map(|value| value.trim().to_owned())
+            .filter(|value| !value.is_empty())
             .map(SecretString::from);
         let (api_key, api_key_source, api_key_error) = match api_key {
             Some(key) => (Some(key), ApiKeySource::Environment, None),

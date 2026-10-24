@@ -702,6 +702,62 @@ async fn a_server_error_charges_nothing() {
 }
 
 #[tokio::test]
+async fn a_scrape_without_a_reported_price_books_the_maximum_estimate() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(json!({"markdown": "# Title\n\nBody."})),
+        )
+        .mount(&server)
+        .await;
+    let ctx = context("scrape-estimate", &server.uri(), 0);
+    let args = arguments(json!({"url": "https://example.org/page"}));
+    let result = call_tool(
+        &ctx,
+        "serper_scrape",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(error_code(&result_json(&result)), None);
+    let ledger = std::fs::read_to_string(ctx.ledger.path().expect("path")).expect("ledger");
+    assert!(
+        ledger.contains("\"credits_estimated\":10"),
+        "an unknown scrape price must keep the maximum estimate: {ledger}"
+    );
+    assert!(
+        ledger.contains("\"credits_actual\":null"),
+        "an unknown scrape price must not book a figure: {ledger}"
+    );
+}
+
+#[tokio::test]
+async fn an_exhausted_balance_reports_a_rate_limit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"message": "Not enough credits"})),
+        )
+        .mount(&server)
+        .await;
+    let ctx = context("exhausted", &server.uri(), 0);
+    let failed = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&arguments(json!({"q": "x"}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        error_code(&result_json(&failed)),
+        Some("serper.rate_limited"),
+        "an exhausted balance must not read as a plain upstream failure"
+    );
+}
+
+#[tokio::test]
 async fn a_rejected_call_charges_nothing() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
