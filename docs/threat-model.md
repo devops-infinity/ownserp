@@ -1,6 +1,6 @@
 # Threat model
 
-This document covers the ownserp server as shipped in this repository. It states what it protects, who can reach it, what can go wrong, and what a later change must revisit.
+This document covers the OwnSERP server as shipped in this repository. It states what it protects, who can reach it, what can go wrong, and what a later change must revisit.
 
 ## Assets
 

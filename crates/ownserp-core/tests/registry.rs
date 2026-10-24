@@ -90,7 +90,7 @@ fn the_server_info_declares_tools_and_both_protocol_versions() {
     let info = handler.get_info();
     assert!(info.capabilities.tools.is_some());
     assert!(info.instructions.is_some());
-    assert_eq!(info.server_info.name, "ownserp");
+    assert_eq!(info.server_info.name, "OwnSERP");
     let versions = handler.supported_protocol_versions();
     assert_eq!(versions.len(), 2);
     assert!(

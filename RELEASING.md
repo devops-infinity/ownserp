@@ -1,4 +1,4 @@
-# Releasing ownserp
+# Releasing OwnSERP
 
 Everything runs on this machine. There is no GitHub Actions workflow, no hosted pipeline, and no release job. `tools/release.sh` does the local half, and `gh` publishes the result only when you run it.
 
@@ -43,7 +43,7 @@ The output is `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256`, and the tag `
 
 ```bash
 gh release create vX.Y.Z dist/ownserp-X.Y.Z-<target>.tar.gz dist/ownserp-X.Y.Z-<target>.tar.gz.sha256 \
-  --title "ownserp X.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)
+  --title "OwnSERP X.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)
 git push origin main
 git push origin vX.Y.Z
 ```

@@ -16,7 +16,7 @@ usage() {
 	cat <<'USAGE'
 Usage: tools/reinstall.sh [options]
 
-Build ownserp and install the binary into your own bin directory.
+Build OwnSERP and install the binary into your own bin directory.
 
   --debug          build the debug profile instead of release
   --dir <path>     install into this directory (default ~/.local/bin)

@@ -48,5 +48,5 @@ pub use types::{
     TimeFilter,
 };
 
-pub const NAME: &str = "ownserp";
+pub const NAME: &str = "OwnSERP";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

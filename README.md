@@ -1,6 +1,6 @@
-# ownserp
+# OwnSERP
 
-An MCP server, written in Rust, for the Serper.dev search API. It turns each Serper endpoint into an MCP tool, reports the credit cost of every call beside the data, and keeps a local ledger you can verify.
+OwnSERP is an MCP server, written in Rust, for the Serper.dev search API. It turns each Serper endpoint into an MCP tool, reports the credit cost of every call beside the data, and keeps a local ledger you can verify.
 
 ## What it does
 

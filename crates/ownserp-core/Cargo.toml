@@ -1,6 +1,6 @@
 [package]
 name = "ownserp-core"
-description = "Engine for the ownserp MCP server: Serper client, tools, shaping, cost ledger"
+description = "Engine for the OwnSERP MCP server: Serper client, tools, shaping, cost ledger"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

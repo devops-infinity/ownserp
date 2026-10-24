@@ -6,9 +6,10 @@ use ownserp_core::{Overrides, PackTier};
 #[derive(Debug, Parser)]
 #[command(
     name = "ownserp",
+    display_name = "OwnSERP",
     version,
-    about = "MCP server for the Serper.dev search API",
-    long_about = "Exposes the Serper.dev search endpoints as MCP tools over stdio or Streamable HTTP, with per-call credit accounting."
+    about = "OwnSERP, an MCP server for the Serper.dev search API",
+    long_about = "OwnSERP exposes the Serper.dev search endpoints as MCP tools over stdio or Streamable HTTP, with per-call credit accounting."
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]

@@ -1,6 +1,7 @@
 {
   "manifest_version": "0.3",
   "name": "ownserp",
+  "display_name": "OwnSERP",
   "version": "0.1.0",
   "description": "Serper.dev search tools for MCP clients, with credit accounting",
   "author": {

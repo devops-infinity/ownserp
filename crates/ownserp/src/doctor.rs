@@ -5,7 +5,7 @@ use crate::cli::DoctorArgs;
 
 pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     let settings = Settings::load(args.into_overrides()).context("resolving settings")?;
-    println!("ownserp {}", env!("CARGO_PKG_VERSION"));
+    println!("OwnSERP {}", env!("CARGO_PKG_VERSION"));
     println!("api key source: {}", settings.api_key_source().label());
     if let Some(error) = settings.api_key_error() {
         println!("keychain error: {error}");
