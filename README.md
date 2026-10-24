@@ -1,56 +1,179 @@
 # OwnSERP
 
-OwnSERP is an MCP server, written in Rust, for the Serper.dev search API. It turns each Serper endpoint into an MCP tool, reports the credit cost of every call beside the data, and keeps a local ledger you can verify.
+An MCP server for the Serper.dev search API, with per-call credit accounting.
 
-## What it does
+## Status
 
-- Speaks MCP revision 2026-07-28 and still answers clients on 2025-11-25.
-- Runs over stdio by default, or over Streamable HTTP with a bearer token gate.
-- Pins an input schema and an output schema on every tool, so a client sees the full contract.
-- Puts a `_cost` object on every result with the credits for that call, the session total, and the dollar equivalent.
-- Writes one row per call to an append-only, hash-chained ledger, and checks the chain on every start.
-- Treats each result string as untrusted web data. Invisible characters are stripped, long text is capped and marked `truncated`, and absent fields are omitted instead of sent as null.
-- Refuses a call before it spends anything when it passes the per-call credit ceiling or the session budget.
+Pre-1.0. Every release ships from a tagged commit after the full local gate passes. The crate, the binary, and the configuration keys keep their names within the pre-1.0 line; a minor release may change behavior, and `CHANGELOG.md` records every change.
 
-## Install
+## Contents
 
-You need Rust 1.89 or newer. The repository pins 1.99.1 in `rust-toolchain.toml`.
+- [Overview](#overview)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Connect a client](#connect-a-client)
+- [API key](#api-key)
+- [Tools](#tools)
+- [Response shape and field presets](#response-shape-and-field-presets)
+- [Cost accounting and the ledger](#cost-accounting-and-the-ledger)
+- [Configuration](#configuration)
+- [HTTP deployment](#http-deployment)
+- [Security](#security)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [Distribution](#distribution)
+- [Support](#support)
+- [Contributing](#contributing)
+- [License](#license)
+
+## Overview
+
+OwnSERP exposes the Serper.dev search endpoints as MCP (Model Context Protocol) tools. A model can search the web, images, news, places, maps, videos, shopping, scholar, patents, reviews, and lens, extract a page, resolve a location name, and read its own spend, all through one local server.
+
+It is built for agents that spend metered credits. Every tool description states its price, every result carries a cost object, and a local ledger records each call. Before a call spends anything, the server checks a per-call ceiling and an optional session budget and refuses the call when either would be passed. Results are shaped for a model rather than for a browser: invisible characters are stripped, long text is capped and marked, absent fields are omitted, and key order is fixed.
+
+The server is one binary and needs no language runtime. It speaks MCP revision 2026-07-28 and answers clients on 2025-11-25. It runs over stdio by default, or over Streamable HTTP with a bearer token gate.
+
+## Requirements
+
+- To run a published binary: no runtime, no toolchain. Linux x86_64 is the published binary platform.
+- To build from source: Rust 1.89 or newer, pinned to 1.99.1 in `rust-toolchain.toml`.
+- A Serper.dev account and API key from https://serper.dev/api-keys.
+- A client that speaks MCP over stdio, or any HTTP client for the Streamable HTTP transport.
+
+## Installation
+
+npm and Homebrew run on Linux x86_64. npm needs Node 18 or newer. The Homebrew formula builds from source on macOS.
+
+Release archives cover Linux x86_64 with glibc, Linux x86_64 with static musl, Linux ARM64, and Windows x86_64. macOS builds from source.
+
+### npm
 
 ```sh
 npx @devops-infinity/ownserp serve
+```
+
+The package downloads the matching release archive on first run, checks it against the published SHA-256, and starts the binary.
+
+### Homebrew
+
+```sh
 brew install devops-infinity/tap/ownserp
-cargo install ownserp
 ```
 
-From this checkout instead:
+Linux installs the release binary. macOS builds from source through the formula.
+
+### Release archive
 
 ```sh
-cargo install --path crates/ownserp --locked
+VERSION=0.1.2
+BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
+curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
+sha256sum "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+cat "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
+tar -xzf "ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
+install -m 0755 ownserp ~/.local/bin/ownserp
 ```
 
-Check the resolved settings and both Serper hosts:
+The two hashes must match before the file is installed. Replace the target in both file names with `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, or `x86_64-pc-windows-gnu` for those platforms.
+
+### Container
 
 ```sh
-ownserp doctor
+docker run --rm -p 127.0.0.1:8777:8777 \
+  -e SERPER_API_KEY -e OWN_SERPER_BEARER_TOKENS \
+  ghcr.io/devops-infinity/ownserp:latest
 ```
 
-## Set the API key
+The image serves Streamable HTTP and refuses a public bind without a bearer token, so both variables are required. The ghcr package is private to the organization, so run `docker login ghcr.io` with an account that has access before pulling it.
 
-Three sources work, and the process environment wins over the keychain.
+### Windows
 
-- Environment variable, set in your shell or in the client's own env block:
+Download `ownserp-<version>-x86_64-pc-windows-gnu.tar.gz` from the release page, extract `ownserp.exe`, and put the folder on your PATH. A client configuration that cannot resolve the name uses the absolute path to `ownserp.exe`.
+
+### MCPB bundle
+
+Download `ownserp-<version>-linux.mcpb` from the release page and open it in a client that supports MCP Bundles. The bundle asks for the API key and stores it in the OS keychain.
+
+## Quick start
 
 ```sh
 export SERPER_API_KEY="your key"
+npx @devops-infinity/ownserp doctor
+npx @devops-infinity/ownserp serve
 ```
 
-- OS keychain, read from stdin so the key never sits in your shell history:
+The first command sets the key for the shell. The second prints the resolved settings, the key source with the key masked, and the answer from both Serper hosts. The third starts the server on stdio, which is the command an MCP client launches, so it keeps running until the client stops it.
+
+To connect a client, add the server as shown in the next section. This repository carries a project `.mcp.json`, so Claude Code picks it up inside this checkout.
+
+## Connect a client
+
+Every client runs `ownserp serve` as a stdio process and passes `SERPER_API_KEY` in the environment. When a desktop client cannot resolve `ownserp` on its PATH, use the absolute path printed by `command -v ownserp`.
+
+### Claude Code
 
 ```sh
-printf '%s' "$SERPER_API_KEY" | ownserp config set-api-key
+claude mcp add --scope project ownserp -- ownserp serve
 ```
 
-- Client JSON config, where the client injects the env block it already holds. This repository ships a `.mcp.json` that runs `ownserp serve`, and the server reads the key from the environment your client passes, so an exported `SERPER_API_KEY` is enough:
+Or commit a `.mcp.json` at the project root:
+
+```json
+{
+  "mcpServers": {
+    "ownserp": {
+      "command": "ownserp",
+      "args": ["serve"]
+    }
+  }
+}
+```
+
+### Claude Desktop
+
+Add this to `claude_desktop_config.json`, at `~/Library/Application Support/Claude/` on macOS or `%APPDATA%\Claude\` on Windows. Use the absolute path to the installed binary, because a desktop application does not inherit the shell PATH:
+
+```json
+{
+  "mcpServers": {
+    "ownserp": {
+      "command": "/absolute/path/to/ownserp",
+      "args": ["serve"],
+      "env": { "SERPER_API_KEY": "your key" }
+    }
+  }
+}
+```
+
+The npm package covers Linux x86_64. On macOS and Windows, build from source and point `command` at that binary.
+
+### OpenAI Codex CLI
+
+```sh
+codex mcp add ownserp --env SERPER_API_KEY="$SERPER_API_KEY" -- ownserp serve
+```
+
+Or in `~/.codex/config.toml`, or a project `.codex/config.toml`:
+
+```toml
+[mcp_servers.ownserp]
+command = "ownserp"
+args = ["serve"]
+env_vars = ["SERPER_API_KEY"]
+```
+
+### Command Code
+
+```sh
+commandcode mcp add-json --scope project ownserp '{"type":"stdio","command":"ownserp","args":["serve"]}'
+```
+
+### Cursor
+
+In `~/.cursor/mcp.json`, or `.cursor/mcp.json` for one project:
 
 ```json
 {
@@ -64,25 +187,85 @@ printf '%s' "$SERPER_API_KEY" | ownserp config set-api-key
 }
 ```
 
-The key is never read from a command line argument, never written to the profile file, and never printed unmasked. `docs/threat-model.md` states what each boundary protects and what stays as residual risk.
+### Windsurf (Cascade)
 
-On Linux the keychain store is Secret Service, so a desktop session bus must be running. On a headless server, set `SERPER_API_KEY` instead. The process environment always wins over the keychain, which is also why a value injected by a client's env block takes effect without touching the keychain.
+In `~/.config/devin/mcp_config.json` on Linux and macOS, or `%APPDATA%\devin\mcp_config.json` on Windows:
 
-## Run over HTTP
-
-```sh
-OWN_SERPER_BEARER_TOKENS="token-for-this-deployment" \
-  ownserp serve --http --bind 127.0.0.1:8777
+```json
+{
+  "mcpServers": {
+    "ownserp": {
+      "command": "ownserp",
+      "args": ["serve"],
+      "env": { "SERPER_API_KEY": "your key" }
+    }
+  }
+}
 ```
 
-`/healthz` is open, `/readyz` and `/metrics` need the bearer token, and every other path is the MCP endpoint. The server refuses to bind a non-loopback address without at least one token, refuses any token shorter than 32 characters, checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Behind a proxy, list the names it will send in `OWN_SERPER_ALLOWED_HOSTS`.
+### VS Code
+
+Run `MCP: Add Server` from the Command Palette, or add `.vscode/mcp.json` to the workspace:
+
+```json
+{
+  "servers": {
+    "ownserp": {
+      "type": "stdio",
+      "command": "ownserp",
+      "args": ["serve"],
+      "env": { "SERPER_API_KEY": "your key" }
+    }
+  }
+}
+```
+
+### Zed
+
+In `settings.json`:
+
+```json
+{
+  "context_servers": {
+    "ownserp": {
+      "command": "ownserp",
+      "args": ["serve"],
+      "env": { "SERPER_API_KEY": "your key" }
+    }
+  }
+}
+```
+
+### Other MCP clients
+
+Use stdio with command `ownserp` and argument `serve`, and set `SERPER_API_KEY` in the client's environment block or in the shell the client inherits.
+
+## API key
+
+Three sources work, and the process environment wins over the keychain.
+
+- Environment variable, in the shell or in the client's env block:
+
+```sh
+export SERPER_API_KEY="your key"
+```
+
+- OS keychain, read from stdin so the key does not enter shell history:
+
+```sh
+printf '%s' "$SERPER_API_KEY" | ownserp config set-api-key
+```
+
+- Client JSON config, where the client injects the env block it holds.
+
+The key is never read from a command line argument, never written to the profile file, and never printed unmasked. On Linux the keychain store is Secret Service, so a desktop session bus must be running; on a headless server, set `SERPER_API_KEY` instead. Use one named key per project or agent at https://serper.dev/api-keys, because a key cannot be scoped to a smaller spend.
 
 ## Tools
 
-Each tool costs the credits named here, and its description in the tool list repeats the figure so a model can budget before spending.
+Every tool description in the tool list states the price, so a model can budget before spending.
 
 - `serper_search`, 1 credit. Web results with knowledge graph, answer box, and related searches.
-- `serper_images`, 1 credit, 2 when `num` is above 10. Image results.
+- `serper_images`, 1 credit, 2 when `num` is above 10. Image results with dimensions and source.
 - `serper_news`, 1 credit. Dated news results.
 - `serper_places`, 1 credit. Local businesses filtered by a Serper location name.
 - `serper_maps`, 3 credits. Places anchored to a map viewport in `@lat,lng,zoomz` form.
@@ -91,34 +274,34 @@ Each tool costs the credits named here, and its description in the tool list rep
 - `serper_scholar`, 1 credit. Papers with publication info and citation counts.
 - `serper_patents`, 1 credit. Patents with assignee and dates.
 - `serper_autocomplete`, 1 credit. Query suggestions, taking only `q`, `gl`, and `hl`.
-- `serper_reviews`, 1 credit. Reviews for one place, with cursor pagination.
+- `serper_reviews`, 1 credit. Reviews for one place, with cursor pagination through `nextPageToken`.
 - `serper_lens`, 3 credits. Reverse image search for a public image URL.
-- `serper_scrape`, 2, 6, or 10 credits by page difficulty. Page content as Markdown or text.
+- `serper_scrape`, 2, 6, or 10 credits by page difficulty. Page content as Markdown or text, with an optional title, images, links, and videos, and the actual credits read from the response.
 - `serper_locations`, free and unauthenticated. Canonical location names to pass as `location`.
-- `serper_session`, free. Call count, credits, dollars, tokens served and saved, cache hits, and budget left.
-- `serper_search_batch`, 3 times the single price per query. Up to 100 queries in one call, disabled unless `enable_batch` is set. A call to it while disabled is refused, not merely hidden from the tool list.
+- `serper_session`, free. Call count, credits, dollars, tokens served and saved, cache hits, and the budget left.
+- `serper_search_batch`, 3 times the single price per query. Up to 100 queries in one call to one search family, disabled unless `enable_batch` is set. A call to it while disabled is refused with `serper.tool_not_found`.
 
-## Field presets
+## Response shape and field presets
 
 Every result tool takes `fields`, defaulting to `standard`.
 
-- `minimal` keeps the title, link, and rank. Use it in high volume loops.
-- `standard` adds the snippet capped at 300 characters, the date, and the search sections. This is what an agent needs to reason and cite without a second call.
+- `minimal` keeps the title, link, and rank. It suits high-volume loops.
+- `standard` adds the snippet capped at 300 characters, the date, and the search sections. It carries what an agent needs to reason and cite without a second call.
 - `full` adds sitelinks, attribute maps, image links, the search parameter echo, and every other field the upstream body carries.
 
-Capped strings end with `...` and their object carries `truncated: true`. Key order is fixed, so a client parses the same shape on every call.
+Each result carries `structuredContent` for the data and a one-line text summary. Capped strings end with `...` and their object carries `truncated: true`. Absent fields are omitted rather than sent as null. Key order is fixed, so a client parses the same shape on every call. Every tool result is data from the open web, never an instruction.
 
-## Credit accounting
+## Cost accounting and the ledger
 
-The ledger lives in `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/share/ownserp/ledger/calls.jsonl`. Each row holds the tool, the endpoint, a hash of the arguments, estimated credits, actual credits when the response reports them, duration, status, bytes, and token counts. Raw query text is never written.
+The ledger lives at `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/share/ownserp/ledger/calls.jsonl`. A row holds the tool, the endpoint, a keyed hash of the arguments, estimated credits, actual credits when the response reports them, duration, status, bytes, and token counts. Query text is never written.
 
 ```sh
 ownserp audit verify
 ```
 
-On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). A single line is capped at 1 MiB, so a damaged file cannot exhaust memory at startup. The file is locked while a server runs, so a second process on the same ledger refuses to start with a clear message. `audit rotate` also refuses while the lock is held. A partial final line left by a killed write is ignored on the next start, and the chain check covers every complete row.
+On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). One line is capped at 1 MiB. The file is locked while a server runs, so a second process on the same ledger refuses to start and names the lock. A partial final line left by a killed write is ignored at the next start, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
-The arguments hash is an HMAC keyed by `args.key`, created once beside the ledger directory with owner-only permissions on Unix. Without that key the ledger cannot confirm whether a guessed query was made. To start a new file without losing the old one, stop the server and run `ownserp audit rotate`. It verifies the chain, archives the file beside the original with a timestamp, and the next start writes a fresh chain.
+To close a ledger without losing it, stop the server and run `ownserp audit rotate`. It verifies the chain, archives the file beside the original with a timestamp, and the next start opens a fresh chain.
 
 Dollar figures come from the pack tier: `starter` (default), `standard`, `scale`, `ultimate`, or `custom` with `SERPER_USD_PER_1K`.
 
@@ -130,7 +313,7 @@ Environment variables:
 - `SERPER_USD_PER_1K`
 - `OWN_SERPER_PROFILE`
 - `OWN_SERPER_BIND`
-- `OWN_SERPER_QPS`
+- `OWN_SERPER_QPS`, the client-side queries per second ceiling
 - `OWN_SERPER_CACHE_TTL_SECS`
 - `OWN_SERPER_LEDGER_DIR`
 - `OWN_SERPER_BEARER_TOKENS`
@@ -146,7 +329,7 @@ usd_per_1k = 1.0
 qps = 50
 cache_ttl_secs = 0
 cache_max_bytes = 16777216
-ledger_dir = "/home/you/.local/share/ownserp/ledger"
+ledger_dir = "/absolute/path/to/ownserp-ledger"
 per_call_credit_ceiling = 10
 session_budget_credits = 500
 enable_batch = false
@@ -156,65 +339,80 @@ request_timeout_secs = 30
 http_qps = 0
 ```
 
-The cache is off by default. `cache_ttl_secs` above zero turns it on, and a hit answers with `cacheHit: true` and charges nothing. Calls with `tbs` set skip the cache.
+`ledger_dir` takes an absolute path. The file is a TOML document, so a `~` or a variable is stored literally rather than expanded.
+
+The cache is off by default. `cache_ttl_secs` above zero turns it on; a hit answers with `cacheHit: true` and charges nothing. A call with `tbs` set skips the cache.
+
+`ownserp doctor` prints every resolved setting and its source, masks the key, and probes both hosts.
+
+## HTTP deployment
+
+```sh
+OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
+  ownserp serve --http --bind 127.0.0.1:8777
+```
+
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
+
+## Security
+
+The server holds one API key, sends queries only to Serper over TLS, and sends no telemetry. Results are treated as untrusted text. [SECURITY.md](SECURITY.md) states the reporting process, and the [threat model](docs/threat-model.md) states the assets, trust boundaries, controls, and residual risks.
+
+## Troubleshooting
+
+Each error carries a stable code, a message, and a remedy. The codes and their fixes:
+
+- `serper.auth_missing`. No key is configured. Set `SERPER_API_KEY`, or run `ownserp config set-api-key`.
+- `serper.auth_failed`. Serper rejected the key. Check it at https://serper.dev/api-keys.
+- `serper.rate_limited`. The upstream rate limit or the credit balance stopped the call. Serper publishes no retry header, and the server does not retry a 429.
+- `serper.budget_refused`. The per-call ceiling or the session budget would be passed. Raise it in the profile, or lower `num`.
+- `serper.bad_request`. An argument failed validation. The message names the field.
+- `serper.tool_not_found`. The tool is not in this configuration's list. Call `tools/list`, and set `enable_batch` for the batch tool.
+- `serper.config_error`. A setting is malformed. `ownserp doctor` shows each resolved value and its source.
+- `serper.keychain_error`. The OS keychain is unavailable. Use `SERPER_API_KEY` on a headless host.
+- `serper.upstream_failed`. Serper or the network failed after retries. Check https://serper.betteruptime.com.
+- `serper.cancelled`. The client cancelled the request.
+- `serper.internal_error`. An unexpected local failure. Retry once, then open an issue with the message.
 
 ## Development
 
-```sh
-cargo fmt --all -- --check
-cargo check --workspace --all-targets --all-features --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --all-features --locked
-cargo test --workspace --all-features --locked --doc
-RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
-cargo machete
-cargo deny check
-cargo llvm-cov --workspace --all-features --fail-under-lines 80 --summary-only
-```
-
-Line coverage measured on 2026-10-24 is 80.2 percent, and `tools/verify.sh` fails the gate below 80 percent line coverage through `cargo llvm-cov --fail-under-lines 80`, so the figure cannot silently fall.
-
-The tests use recorded payloads and a local mock server. No test calls Serper, so the suite needs no key and spends no credits.
-
-The advisory scan is:
+This path needs Rust 1.89 or newer, pinned to 1.99.1 in `rust-toolchain.toml`.
 
 ```sh
-cargo audit --deny warnings \
-  --ignore RUSTSEC-2026-0370 \
-  --ignore RUSTSEC-2026-0371 \
-  --ignore RUSTSEC-2026-0372
+cargo install --path crates/ownserp --locked
+tools/verify.sh
 ```
 
-Those three flags are unmaintained notices on `zvariant`, `zbus_names`, and `zvariant_derive`, which reach the tree only through the Secret Service keychain store. `deny.toml` carries the same entries with a reason and a review date. `cargo-deny` is not installed on this machine, so `deny.toml` has not been run yet.
+`tools/verify.sh` runs the whole gate locally, with no hosted pipeline: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan.
 
-## Local lifecycle
+The local lifecycle:
 
-- `tools/verify.sh` runs the whole gate: formatting, check, clippy, tests, docs, advisories, policy, unused dependencies, and a secret scan.
 - `tools/reinstall.sh` builds and installs the binary into `~/.local/bin`.
-- `tools/release.sh --prepare` bumps the version, and `--package` builds the archive and checksum.
+- `tools/release.sh --prepare` bumps the version; `--package` builds the archive and checksum.
+- `tools/publish-npm.sh` publishes the npm package; `tools/npm-auth-setup.sh` stores the token that makes it OTP-free.
 - `tools/install-hooks.sh` points git at the local hooks: a secret scan before each commit and the full gate before each push.
-- `RELEASING.md` is the runbook for cutting a release.
+- [RELEASING.md](RELEASING.md) is the release runbook.
 
-There is no GitHub workflow and no hosted pipeline. Every check and every release step runs on this machine.
+## Distribution
 
-## Distribution files
+- crates.io: `ownserp` and `ownserp-core`.
+- npm: `@devops-infinity/ownserp`.
+- Homebrew tap: `devops-infinity/tap`.
+- MCP Registry: `io.github.devops-infinity/ownserp`.
+- GitHub releases: archives for Linux x86_64 with glibc, Linux x86_64 with static musl, Linux ARM64, and Windows x86_64, each with a checksum, and a Linux MCPB bundle.
+- Container image: `ghcr.io/devops-infinity/ownserp`.
+- Manifests in this repository: `server.json`, `mcpb/manifest.json`, and `Dockerfile`.
 
-- `server.json` is the MCP Registry manifest for `io.github.devops-infinity/ownserp`.
-- `mcpb/manifest.json` is the bundle manifest for a binary server with a keychain-backed key.
-- `Dockerfile` builds a small image that serves Streamable HTTP, with both base images pinned by digest.
+## Support
 
-Published now: crates.io (`ownserp` and `ownserp-core`), npm (`@devops-infinity/ownserp`), the Homebrew tap at `devops-infinity/tap`, the MCP Registry entry `io.github.devops-infinity/ownserp`, GitHub releases with a Linux archive, its checksum, and a Linux MCPB bundle, and the container image `ghcr.io/devops-infinity/ownserp`.
+Open an issue at https://github.com/devops-infinity/ownserp/issues for a question, a bug, or a feature request. Report a security problem through the private channel in `SECURITY.md`, never in an issue.
 
-## Toolchain policy
+## Contributing
 
-The crate pins Rust 1.99.1 and declares an MSRV of 1.89, which is above the floor of every dependency. The MSRV is raised only when a dependency or a language feature needs it, and the change is recorded in `CHANGELOG.md` and ships in a minor release.
+Issues and pull requests are welcome at https://github.com/devops-infinity/ownserp. Run `tools/verify.sh` before opening a pull request; a change lands only when the gate passes. Read `RELEASING.md` before cutting a release.
 
-The edition is 2024. When a new edition ships, the upgrade runs in one change: `cargo update`, `cargo fix --edition`, the `edition` field bump, `cargo fmt`, then the full gate from the Development section above. No edition is kept alive beside the new one.
-
-mcp-name: io.github.devops-infinity/ownserp
+Results come from Google through Serper. Downstream users keep the attribution duty Serper's terms place on them.
 
 ## License
 
-MIT OR Apache-2.0. See `LICENSE-MIT` and `LICENSE-APACHE`.
-
-Results come from Google through Serper. Downstream users keep the attribution duty Serper's terms place on them.
+MIT OR Apache-2.0. See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE).
