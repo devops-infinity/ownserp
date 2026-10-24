@@ -4,6 +4,19 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 The minimum supported Rust version is 1.89. Raising it is recorded in this file and ships in a minor release.
 
+## [Unreleased]
+
+## [1.2.0] - 2026-10-24
+
+### Changed
+
+- Release packaging moved to cargo-dist: prebuilt archives for macOS, Linux, and Windows, shell and PowerShell installers, a Homebrew formula that installs the binary, and an npm package that selects the platform archive.
+- The Docker example sets `OWN_SERPER_ALLOWED_HOSTS`, because the image binds `0.0.0.0` and the derived allowlist matches no client Host.
+
+### Fixed
+
+- The tag publish hint no longer references a removed archive variable, so `--tag` exits cleanly after creating the tag.
+
 ## [1.1.0] - 2026-10-24
 
 ### Changed
@@ -23,12 +36,6 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - The ledger lock error names `OWN_SERPER_LEDGER_DIR` as the way to run a second client.
 - The HTTP rate limiter runs before the bearer gate, connections are capped at 256, the Host check accepts the HTTP/2 authority, and shutdown joins the server task after the grace period.
 - `SerperClient::with_base_url` requires https outside loopback and sends the API key only to a Serper host or a loopback test server.
-
-## [Unreleased]
-
-### Changed
-
-- Release packaging moved to cargo-dist: prebuilt archives for macOS, Linux, and Windows, shell and PowerShell installers, a Homebrew formula that installs the binary, and an npm package that selects the platform archive.
 
 ## [1.0.0] - 2026-10-24
 
