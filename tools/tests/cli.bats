@@ -45,3 +45,9 @@ setup() {
 	[ "$status" -eq 0 ]
 	[[ "$output" == *"Bypass two-factor authentication"* ]]
 }
+
+@test "registry auth help exits zero" {
+	run "$REPO/tools/registry-auth.sh" --help
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"MCP_GITHUB_TOKEN"* ]]
+}

@@ -89,7 +89,7 @@ docker run --rm -p 127.0.0.1:8777:8777 \
   ghcr.io/devops-infinity/ownserp:latest
 ```
 
-The image serves Streamable HTTP and refuses a public bind without a bearer token, so both variables are required. The ghcr package is private to the organization, so run `docker login ghcr.io` with an account that has access before pulling it.
+The image serves Streamable HTTP and refuses a public bind without a bearer token, so both variables are required. The package is public, so `docker pull` needs no login.
 
 ### Windows
 
@@ -393,6 +393,7 @@ The local lifecycle:
 - `tools/reinstall.sh` builds and installs the binary into `~/.local/bin`.
 - `tools/release.sh --prepare` bumps the version; `--package` builds the archive and checksum.
 - `tools/publish-npm.sh` publishes the npm package; `tools/npm-auth-setup.sh` stores the token that makes it OTP-free.
+- `tools/registry-auth.sh` refreshes the GitHub, npm, crates.io, MCP Registry, and ghcr sessions from the environment variables already in your shell, so no registry asks for a login during a release.
 - `tools/install-hooks.sh` points git at the local hooks: a secret scan before each commit and the full gate before each push.
 - [RELEASING.md](RELEASING.md) is the release runbook.
 - [docs/benchmark.md](docs/benchmark.md) compares the live tool surface with the Python Serper MCP server and records the measured result.
@@ -404,7 +405,7 @@ The local lifecycle:
 - Homebrew tap: `devops-infinity/tap`.
 - MCP Registry: `io.github.devops-infinity/ownserp`.
 - GitHub releases: archives for Linux x86_64 with glibc, Linux x86_64 with static musl, Linux ARM64, and Windows x86_64, each with a checksum, and a Linux MCPB bundle.
-- Container image: `ghcr.io/devops-infinity/ownserp`.
+- Container image: `ghcr.io/devops-infinity/ownserp`, public.
 - Manifests in this repository: `server.json`, `mcpb/manifest.json`, and `Dockerfile`.
 
 ## Support

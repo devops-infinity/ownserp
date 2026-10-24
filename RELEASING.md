@@ -6,9 +6,21 @@ Everything runs on this machine. There is no GitHub Actions workflow, no hosted 
 
 - Rust 1.99.1 or newer, which `rust-toolchain.toml` pins.
 - The gate tools: `cargo install --locked cargo-audit cargo-deny cargo-machete`, plus `shellcheck`, `shfmt`, `gitleaks`, and `jq` from Homebrew.
-- `gh auth login` with push access to `devops-infinity/ownserp`.
+- `gh auth login` with push access to `devops-infinity/ownserp`, or `GITHUB_TOKEN` in the environment.
+- `CARGO_REGISTRY_TOKEN` in the environment for crates.io.
+- `MCP_GITHUB_TOKEN`, `GITHUB_PAT`, or `GITHUB_PERSONAL_ACCESS_TOKEN` with the `read:org` scope, so the MCP Registry login needs no browser.
 - Optional: a signing key in `git config user.signingkey`, so `--tag` creates a signed tag instead of an annotated one.
 - Local hooks, once per checkout: `tools/install-hooks.sh`. The pre-commit hook scans staged content for secrets, and the pre-push hook runs `tools/verify.sh`.
+
+## Refresh the registry sessions
+
+Run this once per shell session before publishing. It reads every credential from the environment and prints only the account name, so no registry asks for a browser login in the middle of a release.
+
+```bash
+tools/registry-auth.sh
+```
+
+It refreshes the GitHub CLI, npm, the MCP Registry, and the ghcr login, and it reports whether `CARGO_REGISTRY_TOKEN` is set. Nothing is written to the repository or to a command line.
 
 ## Cut a release
 
@@ -68,10 +80,10 @@ tools/reinstall.sh --skip-gate --dir /usr/local/bin
 
 ## The gate by hand
 
-`tools/verify.sh` is the same set the release runs: shell syntax, shellcheck, shfmt, `cargo fmt --check`, check, clippy with warnings denied, tests, doc tests, docs, `cargo audit` with the three reasoned suppressions, `cargo deny check`, `cargo machete`, and a `gitleaks` scan of the tree. Run it before any push.
+`tools/verify.sh` is the same set the release runs: shell syntax, shellcheck, shfmt, `cargo fmt --check`, check, clippy with warnings denied, tests, doc tests, docs, `cargo audit` with the three reasoned suppressions, `cargo deny check`, `cargo machete`, and a `gitleaks` scan of the tree and of the commit history. Run it before any push.
 
 ## What a release does not do
 
 - It does not create or edit a GitHub workflow.
 - It does not commit, push, tag a remote, or publish a release. Those are separate commands you run.
-- It does not publish to crates.io, npm, or the MCP Registry. Each needs your account and a first-publish token, so each stays a deliberate step.
+- It does not publish to crates.io, npm, or the MCP Registry. Each stays a deliberate command after `tools/registry-auth.sh`, so a publish is never an accident.
