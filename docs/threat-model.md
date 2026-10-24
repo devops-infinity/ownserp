@@ -46,7 +46,7 @@ Control: the server refuses a non-loopback bind without at least one bearer toke
 
 ### Request flooding
 
-Control: optional global inbound rate limit (`OWN_SERPER_HTTP_QPS`), a 1 MiB body limit enforced by the transport that reads the body, a 30 second upstream timeout, and a 4 MiB cap on any upstream body. Each retry attempt waits on the local QPS limiter again, so a retry cannot outrun the ceiling. Residual risk: the inbound limit is off by default, and it is global rather than per client.
+Control: optional global inbound rate limit (`OWN_SERPER_HTTP_QPS`), a 1 MiB body limit enforced by the transport that reads the body, a 30 second body arrival deadline, a 30 second upstream timeout, and a 4 MiB cap on any upstream body. Each retry attempt waits on the local QPS limiter again, so a retry cannot outrun the ceiling. Residual risk: the inbound limit is off by default, and it is global rather than per client.
 
 ### Ledger tampering or loss
 
@@ -74,7 +74,7 @@ Control: committed lockfile, `--locked` on every gate, `cargo audit` with three 
 
 ### Error leakage
 
-Control: errors carry a stable code, a short message, and a remedy. An upstream message is sanitized of invisible characters and capped at 300 characters before it reaches the model, so a hostile upstream cannot smuggle hidden text through an error. Internal failures log the cause chain and return only the code and the context line.
+Control: errors carry a stable code, a short message, and a remedy. An upstream message is sanitized of invisible characters and capped at 300 characters before it reaches the model, so a hostile upstream cannot smuggle hidden text through an error. A network failure also returns up to three sanitized causes, each capped and stripped of URL queries, so the caller can tell a DNS, TLS, or connection failure apart. Internal failures outside the network path log the cause chain and return only the code and the context line.
 
 ## Out of scope
 

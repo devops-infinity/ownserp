@@ -190,43 +190,53 @@ impl Ledger {
     }
 
     fn append_inner(&self, record: CallRecord) -> Result<LedgerRow> {
-        let mut state = self.lock()?;
-        let row = LedgerRow {
-            seq: state.seq.saturating_add(1),
-            ts_unix: unix_seconds(),
-            tool: record.tool,
-            endpoint: record.endpoint,
-            args_hash: record.args_hash,
-            credits_estimated: record.credits_estimated,
-            credits_actual: record.credits_actual,
-            batch_multiplier: record.batch_multiplier,
-            duration_ms: record.duration_ms,
-            status: record.status,
-            response_bytes: record.response_bytes,
-            tokens: record.tokens,
-            tokens_saved: record.tokens_saved,
-            cache_hit: record.cache_hit,
-            prev: state.last_hash.clone(),
-            hash: String::new(),
+        let (written, handle) = {
+            let mut state = self.lock()?;
+            let row = LedgerRow {
+                seq: state.seq.saturating_add(1),
+                ts_unix: unix_seconds(),
+                tool: record.tool,
+                endpoint: record.endpoint,
+                args_hash: record.args_hash,
+                credits_estimated: record.credits_estimated,
+                credits_actual: record.credits_actual,
+                batch_multiplier: record.batch_multiplier,
+                duration_ms: record.duration_ms,
+                status: record.status,
+                response_bytes: record.response_bytes,
+                tokens: record.tokens,
+                tokens_saved: record.tokens_saved,
+                cache_hit: record.cache_hit,
+                prev: state.last_hash.clone(),
+                hash: String::new(),
+            };
+            let hash = chain_hash(&row.prev, &row);
+            let written = LedgerRow { hash, ..row };
+            let mut line = serde_json::to_string(&written).map_err(|error| Error::Json {
+                context: "encoding a ledger row",
+                source: error,
+            })?;
+            line.push('\n');
+            if line.len() > MAX_LINE_BYTES {
+                return Err(Error::Ledger(format!(
+                    "a ledger row of {} bytes passes the {MAX_LINE_BYTES} byte cap",
+                    line.len()
+                )));
+            }
+            state.file.write_all(line.as_bytes())?;
+            state.seq = written.seq;
+            state.last_hash = written.hash.clone();
+            accumulate(&mut state.totals, &written);
+            let handle = state.file.try_clone().map_err(|error| Error::Io {
+                context: "cloning the ledger handle",
+                source: error,
+            })?;
+            (written, handle)
         };
-        let hash = chain_hash(&row.prev, &row);
-        let written = LedgerRow { hash, ..row };
-        let mut line = serde_json::to_string(&written).map_err(|error| Error::Json {
-            context: "encoding a ledger row",
+        handle.sync_data().map_err(|error| Error::Io {
+            context: "syncing the ledger",
             source: error,
         })?;
-        line.push('\n');
-        if line.len() > MAX_LINE_BYTES {
-            return Err(Error::Ledger(format!(
-                "a ledger row of {} bytes passes the {MAX_LINE_BYTES} byte cap",
-                line.len()
-            )));
-        }
-        state.file.write_all(line.as_bytes())?;
-        state.file.sync_data()?;
-        state.seq = written.seq;
-        state.last_hash = written.hash.clone();
-        accumulate(&mut state.totals, &written);
         Ok(written)
     }
 

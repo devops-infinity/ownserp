@@ -28,7 +28,8 @@ trap cleanup EXIT
 usage() {
 	cat <<'USAGE'
 Usage: tools/release.sh --prepare (--patch | --minor | --major | --version X.Y.Z)
-       tools/release.sh --package [--tag] [--dry-run]
+       tools/release.sh --package [--dry-run]
+       tools/release.sh --tag [--dry-run]
 
 Everything runs on this machine. Nothing is committed, pushed, or published.
 
@@ -37,23 +38,27 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
                    the npm package and loader, the Dockerfile label, and the
                    README install snippet, and add the CHANGELOG heading.
                    The diff is left in the working tree for review.
-  --package        require a clean tree, run tools/verify.sh, build the release
-                   binary, and write dist/ownserp-X.Y.Z-<target>.tar.gz with a
-                   sha256 file.
+  --package        require a clean tree, run tools/verify.sh, build the host
+                   binary plus the aarch64, musl, and Windows targets, write
+                   one archive and sha256 file per target, add shell
+                   completions and the manual page, and stamp the host archive
+                   digest into the npm loader. Commit that stamp before
+                   tagging. Needs cargo-zigbuild and zig.
+  --tag            require a clean tree and an archive whose digest the npm
+                   loader already pins, then create vX.Y.Z at HEAD (signed
+                   when user.signingkey is set); never pushed
   --patch          bump the patch number (with --prepare)
   --minor          bump the minor number (with --prepare)
   --major          bump the major number (with --prepare)
   --version X.Y.Z  use this exact version instead of a computed one
-  --tag            create the annotated tag vX.Y.Z at the packaged commit
-                   (signed when user.signingkey is set); never pushed
   --dry-run        print every action and change nothing
   -h, --help       show this
 
 Release order on this machine:
   1. tools/release.sh --prepare --patch, then edit CHANGELOG.md
   2. commit the bump on a release branch and merge it into main
-  3. tools/release.sh --package --tag
-  4. publish the archive and tag with gh, on your order
+  3. tools/release.sh --package, then commit the npm loader stamp and merge
+  4. tools/release.sh --tag, then push the tag and publish
 USAGE
 }
 
@@ -78,6 +83,9 @@ while [[ $# -gt 0 ]]; do
 		;;
 	--tag)
 		MAKE_TAG=1
+		if [[ -z "$MODE" ]]; then
+			MODE="tag"
+		fi
 		shift
 		;;
 	--dry-run)
@@ -97,8 +105,9 @@ done
 
 [[ -n "$MODE" ]] || {
 	usage
-	die "choose --prepare or --package"
+	die "choose --prepare, --package, or --tag"
 }
+[[ "$MODE" == "package" && "$MAKE_TAG" -eq 1 ]] && die "--tag runs after --package; run --package, commit the loader stamp, then --tag"
 require_tool cargo "install Rust from https://rustup.rs"
 require_tool jq "run: brew install jq"
 
@@ -188,41 +197,106 @@ prepare() {
 }
 
 package() {
-	local target archive stage
+	local host stage extra archive digest loader target binary
 	require_clean_tree
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before packaging"
-	target="$(host_target)"
-	archive="$DIST_DIR/ownserp-$CURRENT-$target.tar.gz"
+	host="$(host_target)"
+	archive="$DIST_DIR/ownserp-$CURRENT-$host.tar.gz"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would run tools/verify.sh, build the release binary, and write $archive"
+		say INFO "dry run: would run tools/verify.sh, build $host plus the cross targets, and write one archive per target under $DIST_DIR"
 		return 0
 	fi
 	"$REPO/tools/verify.sh"
-	cargo build --profile dist --locked --bin ownserp
+	require_tool cargo-zigbuild "run: cargo install cargo-zigbuild"
+	require_tool zig "run: brew install zig"
 	mkdir -p "$DIST_DIR"
 	STAGE="$(mktemp -d)"
-	stage="$STAGE"
-	install -m 0755 target/dist/ownserp "$stage/ownserp"
-	cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE server.json "$stage/"
-	tar -czf "$archive" -C "$stage" .
-	sha256_line_of "$archive" >"$archive.sha256"
-	say SUCCESS "wrote $archive"
-	say SUCCESS "wrote $archive.sha256"
-	local smoke="$stage/.smoke"
-	mkdir -p "$smoke"
-	tar -xzf "$archive" -C "$smoke"
-	"$smoke/ownserp" --version >/dev/null
-	say SUCCESS "the archive unpacks and its binary runs"
-	say INFO "tools/publish-npm.sh pins this digest into the npm loader before publishing"
-	if [[ "$MAKE_TAG" -eq 1 ]]; then
-		git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
-		if [[ -n "$(git config user.signingkey || true)" ]]; then
-			git tag -s "v$CURRENT" -m "OwnSERP $CURRENT"
+	extra="$STAGE/extra"
+	mkdir "$extra"
+	cargo build --profile dist --locked --bin ownserp
+	install -m 0755 target/dist/ownserp "$extra/ownserp"
+	"$extra/ownserp" completions bash >"$extra/ownserp.bash"
+	"$extra/ownserp" completions zsh >"$extra/_ownserp"
+	"$extra/ownserp" completions fish >"$extra/ownserp.fish"
+	"$extra/ownserp" man >"$extra/ownserp.1"
+	rm -f "$extra/ownserp"
+	local -a targets=("$host")
+	for target in aarch64-unknown-linux-gnu x86_64-unknown-linux-musl x86_64-pc-windows-gnu; do
+		[[ "$target" == "$host" ]] || targets+=("$target")
+	done
+	for target in "${targets[@]}"; do
+		if [[ "$target" == "$host" ]]; then
+			binary="target/dist/ownserp"
+			if [[ "$host" == *windows* ]]; then
+				binary="$binary.exe"
+			fi
+		elif [[ "$target" == "aarch64-unknown-linux-gnu" ]]; then
+			cargo zigbuild --target "$target.2.28" --profile dist --locked --bin ownserp
+			binary="target/$target/dist/ownserp"
 		else
-			git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
+			cargo zigbuild --target "$target" --profile dist --locked --bin ownserp
+			if [[ "$target" == "x86_64-pc-windows-gnu" ]]; then
+				binary="target/$target/dist/ownserp.exe"
+			else
+				binary="target/$target/dist/ownserp"
+			fi
 		fi
-		say SUCCESS "created tag v$CURRENT (not pushed)"
+		[[ -x "$binary" ]] || die "the build did not produce $binary"
+		stage="$STAGE/$target"
+		mkdir -p "$stage"
+		if [[ "$target" == "x86_64-pc-windows-gnu" ]]; then
+			install -m 0755 "$binary" "$stage/ownserp.exe"
+		else
+			install -m 0755 "$binary" "$stage/ownserp"
+		fi
+		cp "$extra"/* "$stage/"
+		cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE server.json "$stage/"
+		archive="$DIST_DIR/ownserp-$CURRENT-$target.tar.gz"
+		tar -czf "$archive" -C "$stage" .
+		sha256_line_of "$archive" >"$archive.sha256"
+		say SUCCESS "wrote $archive"
+		say SUCCESS "wrote $archive.sha256"
+	done
+	archive="$DIST_DIR/ownserp-$CURRENT-$host.tar.gz"
+	stage="$STAGE/smoke"
+	mkdir -p "$stage"
+	tar -xzf "$archive" -C "$stage"
+	"$stage/ownserp" --version >/dev/null
+	say SUCCESS "the host archive unpacks and its binary runs"
+	loader="$REPO/packages/npm/bin/ownserp.js"
+	digest="$(sha256_of "$archive")"
+	if [[ -f "$loader" ]] && ! grep -q "const DIGEST = \"$digest\";" "$loader"; then
+		sed "s/^const DIGEST = \".*\";/const DIGEST = \"$digest\";/" "$loader" >"$loader.tmp"
+		mv "$loader.tmp" "$loader"
+		say INFO "the npm loader now pins $digest; commit it and merge before --tag"
+	else
+		say SUCCESS "the npm loader already pins $digest"
 	fi
+	say INFO "next: commit the loader stamp, merge it, then run tools/release.sh --tag"
+}
+
+tag_release() {
+	require_clean_tree
+	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before tagging"
+	local target archive digest loader="$REPO/packages/npm/bin/ownserp.js"
+	target="$(host_target)"
+	archive="$DIST_DIR/ownserp-$CURRENT-$target.tar.gz"
+	[[ -f "$archive" ]] || die "missing $archive; run tools/release.sh --package first"
+	digest="$(sha256_of "$archive")"
+	if [[ -f "$loader" ]] && ! grep -q "const DIGEST = \"$digest\";" "$loader"; then
+		die "the npm loader does not pin $digest; commit the loader stamp from --package before tagging"
+	fi
+	git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
+	if [[ "$DRY_RUN" -eq 1 ]]; then
+		say INFO "dry run: would create v$CURRENT at HEAD with $archive"
+		return 0
+	fi
+	if [[ -n "$(git config user.signingkey || true)" ]]; then
+		git tag -s "v$CURRENT" -m "OwnSERP $CURRENT"
+	else
+		git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
+	fi
+	say SUCCESS "created tag v$CURRENT (not pushed)"
 	say INFO "publish with: gh release create v$CURRENT \"$archive\" \"$archive.sha256\" --title \"OwnSERP $CURRENT\""
 }
 
@@ -241,5 +315,9 @@ prepare)
 package)
 	[[ -z "$VERSION" && -z "$BUMP" ]] || die "--package packs the version already in Cargo.toml; bump first with --prepare"
 	package
+	;;
+tag)
+	[[ -z "$VERSION" && -z "$BUMP" ]] || die "--tag uses the version already in Cargo.toml"
+	tag_release
 	;;
 esac

@@ -6,6 +6,21 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Added
+
+- `ownserp completions <shell>` prints completions for bash, zsh, fish, elvish, and PowerShell, and `ownserp man` prints the manual page.
+- Release archives carry `ownserp.bash`, `_ownserp`, `ownserp.fish`, and `ownserp.1`.
+- A network failure carries up to three sanitized causes in the tool error, so a DNS, TLS, or connection failure is visible to the caller.
+- The profile carries a `version` key; a newer schema version is refused by name.
+
+### Changed
+
+- `ownserp doctor` exits 1 when no key is configured or when the Serper health probe fails.
+- The HTTP transport gives a request body 30 seconds to arrive, so a stalled upload cannot hold a concurrency slot for the full request deadline.
+- The ledger releases its lock before fsync, so a slow disk no longer blocks the totals and budget readers.
+- `tools/release.sh` splits package and tag: packaging stamps the archive digest into the npm loader, builds every target, and tagging refuses unless that stamp is committed.
+- The container image carries a health check against `/healthz`.
+
 ## [0.1.5] - 2026-10-24
 
 ### Fixed

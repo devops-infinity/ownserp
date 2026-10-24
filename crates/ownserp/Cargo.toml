@@ -22,6 +22,8 @@ workspace = true
 [dependencies]
 ownserp-core = { path = "../ownserp-core", version = "0.1.5" }
 clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true

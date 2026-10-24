@@ -131,11 +131,22 @@ impl Error {
     pub fn to_json(&self) -> Value {
         let message =
             crate::projection::cap(&crate::projection::sanitize(&self.to_string()), 500).0;
-        json!({
-            "code": self.code(),
-            "message": message,
-            "remedy": self.remedy(),
-        })
+        let mut body = serde_json::Map::new();
+        body.insert("code".to_owned(), json!(self.code()));
+        body.insert("message".to_owned(), json!(message));
+        body.insert("remedy".to_owned(), json!(self.remedy()));
+        if matches!(self, Self::Network { .. }) {
+            let causes: Vec<String> = self
+                .causes()
+                .into_iter()
+                .take(3)
+                .map(|cause| crate::projection::cap(&crate::projection::sanitize(&cause), 300).0)
+                .collect();
+            if !causes.is_empty() {
+                body.insert("causes".to_owned(), json!(causes));
+            }
+        }
+        Value::Object(body)
     }
 
     pub fn causes(&self) -> Vec<String> {
@@ -228,6 +239,22 @@ mod tests {
         );
         assert!(!error.causes().is_empty());
         assert_eq!(error.code(), "serper.internal_error");
+    }
+
+    #[test]
+    fn a_network_error_carries_its_sanitized_cause() {
+        let error = Error::network(
+            "calling Serper",
+            std::io::Error::other("connection reset: https://api.serper.dev/search?q=secret"),
+        );
+        let body = error.to_json();
+        let causes = body
+            .get("causes")
+            .and_then(Value::as_array)
+            .expect("causes");
+        let text = causes[0].as_str().expect("cause");
+        assert!(text.contains("connection reset"));
+        assert!(!body.to_string().contains("secret"));
     }
 
     #[test]

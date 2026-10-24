@@ -63,6 +63,11 @@ if command -v cargo-nextest >/dev/null 2>&1; then
 else
 	run_check "tests" "tests failed" cargo test --workspace --all-features --locked --color=never
 fi
+if rustup toolchain list 2>/dev/null | grep -q '^1\.89'; then
+	run_check "msrv" "the declared minimum Rust version does not build; fix the code or raise rust-version" cargo +1.89.0 check --workspace --all-targets --all-features --locked --color=never
+else
+	warn "Rust 1.89 is not installed, so the MSRV check was skipped"
+fi
 run_check "doc tests" "doc tests failed" cargo test --workspace --all-features --locked --doc
 run_check "docs" "the docs do not build" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 run_check "advisories" "a dependency advisory is open; see deny.toml" cargo audit --deny warnings --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372

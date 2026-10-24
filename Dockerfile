@@ -12,12 +12,14 @@ LABEL org.opencontainers.image.title="OwnSERP" \
       org.opencontainers.image.version="0.1.5" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --system --uid 10001 --create-home ownserp
 COPY --from=builder /src/target/dist/ownserp /usr/local/bin/ownserp
 USER ownserp
 ENV OWN_SERPER_BIND=0.0.0.0:8777
 EXPOSE 8777
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+    CMD ["curl", "-fsS", "http://127.0.0.1:8777/healthz"]
 ENTRYPOINT ["ownserp"]
 CMD ["serve", "--http"]

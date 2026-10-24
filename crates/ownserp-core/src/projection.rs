@@ -937,6 +937,38 @@ pub fn summary_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
+
+    fn arb_value(depth: u32) -> BoxedStrategy<Value> {
+        if depth == 0 {
+            prop_oneof![
+                any::<String>().prop_map(Value::String),
+                any::<i64>().prop_map(|number| Value::Number(number.into())),
+                any::<bool>().prop_map(Value::Bool),
+                Just(Value::Null),
+            ]
+            .boxed()
+        } else {
+            prop_oneof![
+                any::<String>().prop_map(Value::String),
+                any::<i64>().prop_map(|number| Value::Number(number.into())),
+                any::<bool>().prop_map(Value::Bool),
+                Just(Value::Null),
+                proptest::collection::vec(arb_value(depth - 1), 0..4).prop_map(Value::Array),
+                proptest::collection::btree_map(any::<String>(), arb_value(depth - 1), 0..4)
+                    .prop_map(|map| Value::Object(map.into_iter().collect())),
+            ]
+            .boxed()
+        }
+    }
+
+    proptest! {
+        #[test]
+        fn fitting_arbitrary_json_never_panics(value in arb_value(3), budget in 0usize..4096) {
+            let fitted = fit_to_budget(value, budget);
+            let _ = serde_json::to_vec(&fitted).expect("serialize");
+        }
+    }
 
     #[test]
     fn the_budget_shrinks_nested_strings_and_arrays() {

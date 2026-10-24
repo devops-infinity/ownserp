@@ -47,6 +47,8 @@ pub struct Settings {
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Profile {
+    #[serde(default = "profile_version")]
+    version: u32,
     pack: Option<PackTier>,
     usd_per_1k: Option<f64>,
     qps: Option<u32>,
@@ -89,6 +91,15 @@ impl Settings {
             }
             _ => Profile::default(),
         };
+        if profile.version > 1 {
+            let shown = profile_path
+                .as_deref()
+                .map_or_else(|| "profile".to_owned(), |path| path.display().to_string());
+            return Err(Error::Config(format!(
+                "{shown} is version {}, newer than this binary supports (1)",
+                profile.version
+            )));
+        }
         let api_key = env("SERPER_API_KEY")
             .filter(|value| !value.trim().is_empty())
             .map(SecretString::from);
@@ -291,6 +302,10 @@ fn parse_host_list(raw: &str) -> Vec<String> {
         .filter(|host| !host.is_empty())
         .map(ToOwned::to_owned)
         .collect()
+}
+
+const fn profile_version() -> u32 {
+    1
 }
 
 fn read_profile(path: &Path) -> Result<Profile> {
@@ -572,6 +587,18 @@ mod tests {
         )
         .expect("settings");
         assert_eq!(settings.bearer_tokens().len(), 2);
+    }
+
+    #[test]
+    fn a_newer_profile_version_is_refused() {
+        let error = load(
+            "newer-profile",
+            "version = 2\n",
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("version 2"));
     }
 
     #[test]

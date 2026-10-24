@@ -26,9 +26,28 @@ fn help_lists_every_subcommand() {
     let output = ownserp().arg("--help").output().expect("run");
     assert!(output.status.success());
     let text = String::from_utf8(output.stdout).expect("utf8");
-    for name in ["serve", "doctor", "config", "audit"] {
+    for name in ["serve", "doctor", "config", "audit", "completions", "man"] {
         assert!(text.contains(name), "{name} is missing from help");
     }
+}
+
+#[test]
+fn completions_are_generated_for_bash() {
+    let output = ownserp()
+        .args(["completions", "bash"])
+        .output()
+        .expect("run");
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).expect("utf8");
+    assert!(text.contains("ownserp"));
+}
+
+#[test]
+fn the_manual_page_is_generated() {
+    let output = ownserp().arg("man").output().expect("run");
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).expect("utf8");
+    assert!(text.contains(".TH"));
 }
 
 #[test]
