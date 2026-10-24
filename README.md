@@ -69,7 +69,7 @@ Linux installs the release binary. macOS builds from source through the formula.
 ### Release archive
 
 ```sh
-VERSION=0.1.4
+VERSION=0.1.5
 BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"
@@ -296,13 +296,13 @@ Each result carries `structuredContent` for the data and a one-line text summary
 
 ## Cost accounting and the ledger
 
-The ledger lives at `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/share/ownserp/ledger/calls.jsonl`. A row holds the tool, the endpoint, a keyed hash of the arguments, estimated credits, actual credits when the response reports them, duration, status, bytes, and token counts. Query text is never written.
+The ledger lives at `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/share/ownserp/ledger/calls.jsonl`. On Windows it lives at `%LOCALAPPDATA%\ownserp\ledger\calls.jsonl`, and when `HOME` is set it follows the Unix path. A row holds the tool, the endpoint, a keyed hash of the arguments, estimated credits, actual credits when the response reports them, duration, status, bytes, and token counts. Query text is never written.
 
 ```sh
 ownserp audit verify
 ```
 
-On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). One line is capped at 1 MiB. The file is locked while a server runs, so a second process on the same ledger refuses to start and names the lock. A partial final line left by a killed write is ignored at the next start, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
+On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. The file is locked while a server runs, so a second process on the same ledger refuses to start and names the lock. A partial final line left by a killed write is ignored at the next start, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
 To close a ledger without losing it, stop the server and run `ownserp audit rotate`. It verifies the chain, archives the file beside the original with a timestamp, and the next start opens a fresh chain.
 
@@ -324,7 +324,7 @@ Environment variables:
 - `OWN_SERPER_HTTP_QPS`, the global inbound request ceiling in HTTP mode, off when unset or 0
 - `OWN_SERPER_LOG_FORMAT`, set to `json` for one JSON object per log line
 
-Profile file at `$XDG_CONFIG_HOME/ownserp/profile.toml`, or `~/.config/ownserp/profile.toml`:
+Profile file at `$XDG_CONFIG_HOME/ownserp/profile.toml`, or `~/.config/ownserp/profile.toml`. On Windows it is `%APPDATA%\ownserp\profile.toml` when `HOME` is unset:
 
 ```toml
 pack = "starter"
