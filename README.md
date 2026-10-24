@@ -202,7 +202,7 @@ There is no GitHub workflow and no hosted pipeline. Every check and every releas
 - `mcpb/manifest.json` is the bundle manifest for a binary server with a keychain-backed key.
 - `Dockerfile` builds a small image that serves Streamable HTTP, with both base images pinned by digest.
 
-Published now: crates.io (`ownserp` and `ownserp-core`), the Homebrew tap at `devops-infinity/tap`, and GitHub releases with a Linux archive and checksum. An OCI image is built from the Dockerfile. npm and the MCP Registry remain unpublished; npm needs an authenticated account, and the registry needs an interactive `mcp-publisher login github`.
+Published now: crates.io (`ownserp` and `ownserp-core`), the Homebrew tap at `devops-infinity/tap`, GitHub releases with a Linux archive and checksum, and the container image `ghcr.io/devops-infinity/ownserp`. npm and the MCP Registry remain unpublished; npm needs an authenticated account, and the registry needs an interactive `mcp-publisher login github`.
 
 ## Toolchain policy
 
