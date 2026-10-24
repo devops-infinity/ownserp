@@ -8,12 +8,12 @@
     "url": "https://github.com/devops-infinity/ownserp",
     "source": "github"
   },
-  "version": "1.3.1",
+  "version": "2.0.0",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@devops-infinity/ownserp",
-      "version": "1.3.1",
+      "version": "2.0.0",
       "transport": {
         "type": "stdio"
       }
