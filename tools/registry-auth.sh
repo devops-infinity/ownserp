@@ -66,7 +66,7 @@ if command -v mcp-publisher >/dev/null 2>&1; then
 		fi
 	done
 	if [[ -n "$source_var" ]]; then
-		if env MCP_GITHUB_TOKEN="${!source_var}" mcp-publisher login github >/dev/null 2>&1; then
+		if MCP_GITHUB_TOKEN="${!source_var}" mcp-publisher login github >/dev/null 2>&1; then
 			log_line SUCCESS "MCP Registry session refreshed from $source_var"
 		else
 			warn "MCP Registry login failed with $source_var; the token needs the read:org scope"

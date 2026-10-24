@@ -33,7 +33,7 @@ Stable at 1.0. Every release ships from a tagged commit after the full local gat
 
 OwnSERP exposes the Serper.dev search endpoints as MCP (Model Context Protocol) tools. A model can search the web, images, news, places, maps, videos, shopping, scholar, patents, reviews, and lens, extract a page, resolve a location name, and read its own spend, all through one local server.
 
-It is built for agents that spend metered credits. Every tool description states its price, every result carries a cost object, and a local ledger records each call. Before a call spends anything, the server checks a per-call ceiling and an optional session budget and refuses the call when either would be passed. Results are shaped for a model rather than for a browser: invisible characters are stripped, long text is capped and marked, absent fields are omitted, and key order is fixed.
+It is built for agents that spend metered credits. Every tool description states its price, every result carries a cost object, and a local ledger records each call. Before a call spends anything, the server can check a per-call ceiling and a session budget and refuse the call when either would be passed. Both are off until you set them, through `per_call_credit_ceiling` and `session_budget_credits` in the profile, or `OWN_SERPER_PER_CALL_CREDIT_CEILING` and `OWN_SERPER_SESSION_BUDGET_CREDITS` in the environment. Results are shaped for a model rather than for a browser: invisible characters are stripped, long text is capped and marked, absent fields are omitted, and key order is fixed.
 
 The server is one binary and needs no language runtime. It speaks MCP revision 2026-07-28 and answers clients on 2025-11-25. It runs over stdio by default, or over Streamable HTTP with a bearer token gate.
 
@@ -131,7 +131,7 @@ npx @devops-infinity/ownserp serve
 
 The first command sets the key for the shell. The second prints the resolved settings, the key source with the key masked, and the answer from both Serper hosts. The third starts the server on stdio, which is the command an MCP client launches, so it keeps running until the client stops it.
 
-To connect a client, add the server as shown in the next section. This repository carries a project `.mcp.json`, so Claude Code picks it up inside this checkout.
+To connect a client, add the server as shown in the next section. 
 
 ## Connect a client
 
@@ -324,9 +324,9 @@ A call that Serper rejects with a 4xx or 5xx status, answers with a rate limit, 
 ownserp audit verify
 ```
 
-On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
+On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. On Windows a running server does not notice a rotate, so restart it to pick up the new chain. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
-`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. The response cache and the `OWN_SERPER_QPS` ceiling stay per process: each process keeps its own cache and its own outbound request rate. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
+`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. That bound holds only when a ceiling is set. With no ceiling it is the process count times the largest single reservation, which is 900 credits for a 100-query maps or lens batch. The response cache and the `OWN_SERPER_QPS` ceiling stay per process: each process keeps its own cache and its own outbound request rate. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
 
 To close a ledger without losing it, run `ownserp audit rotate`. It verifies the chain and archives the file beside the original with a timestamp. Every running server opens a fresh chain on its next write.
 

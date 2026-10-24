@@ -10,7 +10,6 @@ use crate::types::Preset;
 pub const MAX_RESULT_BYTES: usize = 262_144;
 pub(crate) const MAX_SCRAPE_CHARS: usize = 200_000;
 const STANDARD_FIELD_CHARS: usize = 300;
-const STANDARD_PEOPLE_ASK_CHARS: usize = 200;
 const STANDARD_RELATED: usize = 6;
 
 fn is_invisible(character: char) -> bool {
@@ -32,25 +31,47 @@ fn is_invisible(character: char) -> bool {
             | '\u{3164}'
             | '\u{E0000}'..='\u{E007F}'
             | '\u{E0100}'..='\u{E01EF}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{FFF0}'..='\u{FFF8}'
+            | '\u{E0080}'..='\u{E00FF}'
+            | '\u{E01F0}'..='\u{E0FFF}'
     ) || matches!(
         character,
-        '\u{061C}'
-            | '\u{2028}'
-            | '\u{2029}'
-            | '\u{FFA0}'
-            | '\u{180E}'
-            | '\u{FFF9}'..='\u{FFFB}'
-            | '\u{1D173}'..='\u{1D17A}'
-    ) || (character.is_control() && character != '\n' && character != '\t')
+        '\u{061C}' | '\u{FFA0}' | '\u{180E}' | '\u{FFF9}'..='\u{FFFB}' | '\u{1D173}'..='\u{1D17A}'
+    )
+}
+
+fn is_break(character: char) -> bool {
+    matches!(
+        character,
+        '\r' | '\u{000B}' | '\u{000C}' | '\u{0085}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 pub(crate) fn sanitize_value(value: &Value) -> Value {
     match value {
         Value::String(text) => Value::String(sanitize(text)),
-        Value::Array(items) => Value::Array(items.iter().map(sanitize_value).collect()),
+        Value::Array(items) => Value::Array(
+            items
+                .iter()
+                .filter(|item| !item.is_null())
+                .map(sanitize_value)
+                .collect(),
+        ),
         Value::Object(map) => {
             let mut cleaned = serde_json::Map::new();
             for (key, item) in map {
+                if item.is_null() {
+                    continue;
+                }
                 let key = sanitize(key);
                 if !cleaned.contains_key(&key) {
                     cleaned.insert(key, sanitize_value(item));
@@ -69,8 +90,10 @@ pub fn sanitize(text: &str) -> String {
         if is_invisible(character) {
             continue;
         }
-        let character = if character == '\n' || character == '\t' {
+        let character = if character == '\n' || character == '\t' || is_break(character) {
             ' '
+        } else if character.is_control() {
+            continue;
         } else {
             character
         };
@@ -92,15 +115,44 @@ pub fn sanitize(text: &str) -> String {
     }
 }
 
+pub(crate) fn sanitize_multiline(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut characters = text.chars().peekable();
+    while let Some(character) = characters.next() {
+        if is_invisible(character) {
+            continue;
+        }
+        match character {
+            '\r' => {
+                if characters.peek() == Some(&'\n') {
+                    characters.next();
+                }
+                out.push('\n');
+            }
+            '\n' | '\t' => out.push(character),
+            _ if is_break(character) => out.push('\n'),
+            _ if character.is_control() => {}
+            _ => out.push(character),
+        }
+    }
+    let trimmed = out.trim();
+    if trimmed.len() == out.len() {
+        out
+    } else {
+        trimmed.to_owned()
+    }
+}
+
 pub(crate) fn cap(input: &str, max_chars: usize) -> (String, bool) {
     if input.chars().count() <= max_chars {
         return (input.to_owned(), false);
     }
+    let keep = max_chars.saturating_sub(3);
     let mut out = String::with_capacity(max_chars.saturating_mul(4).saturating_add(3));
-    for character in input.chars().take(max_chars) {
-        out.push(character);
+    out.extend(input.chars().take(keep));
+    if max_chars >= 3 {
+        out.push_str("...");
     }
-    out.push_str("...");
     (out, true)
 }
 
@@ -110,6 +162,23 @@ pub(crate) fn text_field(value: &Value, key: &str) -> Option<String> {
         .and_then(Value::as_str)
         .map(sanitize)
         .filter(|text| !text.is_empty())
+}
+
+fn multiline_text_field(value: &Value, key: &str) -> Option<String> {
+    value
+        .get(key)
+        .and_then(Value::as_str)
+        .map(sanitize_multiline)
+        .filter(|text| !text.is_empty())
+}
+
+fn text_or_number_field(value: &Value, key: &str) -> Option<String> {
+    let text = match value.get(key)? {
+        Value::String(text) => sanitize(text),
+        Value::Number(number) => number.to_string(),
+        _ => return None,
+    };
+    if text.is_empty() { None } else { Some(text) }
 }
 
 pub(crate) fn capped_field(value: &Value, key: &str, max_chars: usize) -> (Option<String>, bool) {
@@ -272,10 +341,7 @@ pub(crate) fn news(raw: &Value, preset: Preset) -> (Vec<NewsItem>, bool) {
                 Preset::Full => text_field(value, "imageUrl"),
                 _ => None,
             },
-            position: match preset {
-                Preset::Minimal => None,
-                _ => integer_field(value, "position"),
-            },
+            position: integer_field(value, "position"),
             truncated: cut.then_some(true),
         });
     }
@@ -325,7 +391,10 @@ pub(crate) fn places(raw: &Value, preset: Preset) -> (Vec<PlaceItem>, bool) {
                 _ => text_field(value, "fid"),
             },
             opening_hours: match preset {
-                Preset::Full => value.get("openingHours").map(sanitize_value),
+                Preset::Full => value
+                    .get("openingHours")
+                    .filter(|hours| !hours.is_null())
+                    .map(sanitize_value),
                 _ => None,
             },
             thumbnail_url: match preset {
@@ -585,10 +654,10 @@ pub(crate) fn reviews(raw: &Value, preset: Preset) -> (Vec<ReviewItem>, bool) {
 }
 
 pub(crate) fn lens(raw: &Value, preset: Preset) -> (Vec<LensItem>, bool) {
-    let key = if raw.get("visualMatches").is_some() {
-        "visualMatches"
-    } else {
+    let key = if array(raw, "visualMatches").is_empty() {
         "organic"
+    } else {
+        "visualMatches"
     };
     let truncated = false;
     let mut items = Vec::new();
@@ -622,7 +691,7 @@ pub(crate) fn locations(raw: &Value) -> Vec<LocationItem> {
         .map(|value| LocationItem {
             name: text_field(value, "name"),
             canonical_name: text_field(value, "canonicalName"),
-            google_id: text_field(value, "googleId"),
+            google_id: text_or_number_field(value, "googleId"),
             country_code: text_field(value, "countryCode"),
             target_type: text_field(value, "targetType"),
         })
@@ -666,22 +735,30 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
                     .map(sanitize_value),
                 _ => None,
             },
+            truncated: cut.then_some(true),
         }
     });
-    let answer_box = object(raw, "answerBox").map(|value| AnswerBox {
-        title: text_field(value, "title"),
-        answer: match preset {
-            Preset::Standard => {
-                let (answer, cut) = capped_field(value, "answer", STANDARD_FIELD_CHARS);
-                truncated |= cut;
-                answer
-            }
-            Preset::Full => text_field(value, "answer"),
-            Preset::Minimal => None,
-        },
-        snippet: text_field(value, "snippet"),
-        link: text_field(value, "link"),
-        list: text_array(value, "list"),
+    let answer_box = object(raw, "answerBox").map(|value| {
+        let (answer, answer_cut) = match preset {
+            Preset::Standard => capped_field(value, "answer", STANDARD_FIELD_CHARS),
+            Preset::Full => (text_field(value, "answer"), false),
+            Preset::Minimal => (None, false),
+        };
+        let (snippet, snippet_cut) = match preset {
+            Preset::Standard => capped_field(value, "snippet", STANDARD_FIELD_CHARS),
+            Preset::Full => (text_field(value, "snippet"), false),
+            Preset::Minimal => (None, false),
+        };
+        let cut = answer_cut || snippet_cut;
+        truncated |= cut;
+        AnswerBox {
+            title: text_field(value, "title"),
+            answer,
+            snippet,
+            link: text_field(value, "link"),
+            list: text_array(value, "list"),
+            truncated: cut.then_some(true),
+        }
     });
     let people_also_ask = {
         let entries = array(raw, "peopleAlsoAsk");
@@ -697,9 +774,7 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
                 .take(limit)
                 .map(|value| {
                     let (snippet, cut) = match preset {
-                        Preset::Standard => {
-                            capped_field(value, "snippet", STANDARD_PEOPLE_ASK_CHARS)
-                        }
+                        Preset::Standard => capped_field(value, "snippet", STANDARD_FIELD_CHARS),
                         Preset::Full => (text_field(value, "snippet"), false),
                         Preset::Minimal => (None, false),
                     };
@@ -709,6 +784,7 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
                         snippet,
                         title: text_field(value, "title"),
                         link: text_field(value, "link"),
+                        truncated: cut.then_some(true),
                     }
                 })
                 .collect();
@@ -739,7 +815,10 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
         }
     };
     let search_parameters = match preset {
-        Preset::Full => raw.get("searchParameters").map(sanitize_value),
+        Preset::Full => raw
+            .get("searchParameters")
+            .filter(|parameters| !parameters.is_null())
+            .map(sanitize_value),
         _ => None,
     };
     SearchSections {
@@ -766,7 +845,7 @@ pub struct ScrapeContent {
 pub(crate) fn scrape_content(raw: &Value, preset: Preset) -> ScrapeContent {
     let mut truncated = false;
     let mut capped_text = |key: &str| -> Option<String> {
-        let text = text_field(raw, key)?;
+        let text = multiline_text_field(raw, key)?;
         let (capped, cut) = cap(&text, MAX_SCRAPE_CHARS);
         truncated |= cut;
         Some(capped)
@@ -776,6 +855,7 @@ pub(crate) fn scrape_content(raw: &Value, preset: Preset) -> ScrapeContent {
         Preset::Minimal => None,
         _ => capped_text("text"),
     };
+    let text = if text == markdown { None } else { text };
     ScrapeContent {
         markdown,
         text,
@@ -797,34 +877,35 @@ pub(crate) fn scrape_content(raw: &Value, preset: Preset) -> ScrapeContent {
     }
 }
 
+const SHRINK_ITEM_BUDGET: usize = 20;
+
 pub fn fit_to_budget(mut envelope: Value, max_bytes: usize) -> Value {
     if fits_budget(&envelope, max_bytes) {
         return envelope;
     }
     mark_truncated(&mut envelope);
-    loop {
-        let key = if array_len(&envelope, "results") > 0 {
-            "results"
-        } else if array_len(&envelope, "entries") > 0 {
-            "entries"
-        } else {
-            break;
-        };
-        let len = array_len(&envelope, key);
-        if len == 0 {
-            break;
-        }
-        truncate_array(&mut envelope, key, len / 2);
+    let string_budget = (max_bytes / 64).max(256);
+    shrink_sections(&mut envelope, string_budget);
+    if fits_budget(&envelope, max_bytes) {
+        return envelope;
+    }
+    drop_secondary(&mut envelope);
+    if fits_budget(&envelope, max_bytes) {
+        return envelope;
+    }
+    shrink_text(&mut envelope, max_bytes);
+    if fits_budget(&envelope, max_bytes) {
+        return envelope;
+    }
+    shrink_result_items(&mut envelope, string_budget);
+    if fits_budget(&envelope, max_bytes) {
+        return envelope;
+    }
+    for key in ["results", "entries"] {
+        fit_array(&mut envelope, key, max_bytes);
         if fits_budget(&envelope, max_bytes) {
-            return envelope;
+            break;
         }
-    }
-    if !fits_budget(&envelope, max_bytes) {
-        shrink_text(&mut envelope, max_bytes);
-    }
-    if !fits_budget(&envelope, max_bytes) {
-        let string_budget = (max_bytes / 64).max(256);
-        shrink_values(&mut envelope, string_budget, 20);
     }
     if !fits_budget(&envelope, max_bytes) {
         keep_essential(&mut envelope);
@@ -840,42 +921,133 @@ pub fn fit_to_budget(mut envelope: Value, max_bytes: usize) -> Value {
         }
     }
     if !fits_budget(&envelope, max_bytes) {
-        let cost = envelope.get("cost").cloned();
-        let mut minimal = serde_json::Map::new();
-        minimal.insert("truncated".to_owned(), Value::Bool(true));
-        if let Some(cost) = cost {
-            minimal.insert("cost".to_owned(), cost);
-        }
-        envelope = Value::Object(minimal);
+        envelope = minimal_envelope(&envelope, max_bytes);
     }
     envelope
 }
 
-fn shrink_values(value: &mut Value, string_budget: usize, item_budget: usize) {
+fn shrink_sections(value: &mut Value, string_budget: usize) {
+    if let Some(map) = value.as_object_mut() {
+        for (key, item) in map.iter_mut() {
+            if matches!(
+                key.as_str(),
+                "results" | "entries" | "markdown" | "text" | "nextPageToken"
+            ) {
+                continue;
+            }
+            shrink_nested(item, string_budget, SHRINK_ITEM_BUDGET);
+        }
+    }
+}
+
+fn shrink_result_items(value: &mut Value, string_budget: usize) {
+    if let Some(map) = value.as_object_mut() {
+        for key in ["results", "entries"] {
+            if let Some(items) = map.get_mut(key).and_then(Value::as_array_mut) {
+                for item in items.iter_mut() {
+                    shrink_nested(item, string_budget, SHRINK_ITEM_BUDGET);
+                }
+            }
+        }
+    }
+}
+
+fn drop_secondary(value: &mut Value) {
     match value {
-        Value::String(text) => {
-            if text.chars().count() > string_budget {
-                let capped: String = text.chars().take(string_budget).collect::<String>() + "...";
-                *text = capped;
+        Value::Object(map) => {
+            for key in [
+                "knowledgeGraph",
+                "answerBox",
+                "searchParameters",
+                "sitelinks",
+                "attributes",
+            ] {
+                map.remove(key);
+            }
+            for item in map.values_mut() {
+                drop_secondary(item);
             }
         }
         Value::Array(items) => {
-            items.truncate(item_budget);
             for item in items.iter_mut() {
-                shrink_values(item, string_budget, item_budget);
-            }
-        }
-        Value::Object(map) => {
-            for item in map.values_mut() {
-                shrink_values(item, string_budget, item_budget);
+                drop_secondary(item);
             }
         }
         _ => {}
     }
 }
 
+fn shrink_nested(value: &mut Value, string_budget: usize, item_budget: usize) -> bool {
+    match value {
+        Value::String(text) => {
+            if text.chars().count() > string_budget {
+                let (capped, _) = cap(text, string_budget);
+                *text = capped;
+                true
+            } else {
+                false
+            }
+        }
+        Value::Array(items) => {
+            let mut cut = items.len() > item_budget;
+            items.truncate(item_budget);
+            for item in items.iter_mut() {
+                cut |= shrink_nested(item, string_budget, item_budget);
+            }
+            cut
+        }
+        Value::Object(map) => {
+            let mut cut = false;
+            while map.len() > item_budget {
+                let Some(key) = map.keys().nth(item_budget).cloned() else {
+                    break;
+                };
+                map.remove(&key);
+                cut = true;
+            }
+            for item in map.values_mut() {
+                cut |= shrink_nested(item, string_budget, item_budget);
+            }
+            if cut {
+                map.insert("truncated".to_owned(), Value::Bool(true));
+            }
+            cut
+        }
+        _ => false,
+    }
+}
+
+fn fit_array(value: &mut Value, key: &str, max_bytes: usize) {
+    let Some(items) = value.get_mut(key).and_then(Value::as_array_mut) else {
+        return;
+    };
+    let original = std::mem::take(items);
+    let mut low = 0usize;
+    let mut high = original.len();
+    let mut best = 0usize;
+    while low <= high {
+        let mid = low + (high - low) / 2;
+        assign_array(value, key, original.iter().take(mid).cloned());
+        if fits_budget(value, max_bytes) {
+            best = mid;
+            low = mid + 1;
+        } else if mid == 0 {
+            break;
+        } else {
+            high = mid - 1;
+        }
+    }
+    assign_array(value, key, original.iter().take(best).cloned());
+}
+
+fn assign_array(value: &mut Value, key: &str, items: impl Iterator<Item = Value>) {
+    if let Some(slot) = value.get_mut(key) {
+        *slot = Value::Array(items.collect());
+    }
+}
+
 fn keep_essential(value: &mut Value) {
-    const KEEP: [&str; 10] = [
+    const KEEP: [&str; 11] = [
         "results",
         "entries",
         "cost",
@@ -886,6 +1058,7 @@ fn keep_essential(value: &mut Value) {
         "title",
         "credits",
         "info",
+        "nextPageToken",
     ];
     if let Some(map) = value.as_object_mut() {
         map.retain(|key, _| KEEP.contains(&key.as_str()));
@@ -897,8 +1070,8 @@ fn fits_budget(value: &Value, max_bytes: usize) -> bool {
     serde_json::to_vec(value).is_ok_and(|bytes| bytes.len() <= max_bytes)
 }
 
-fn array_len(value: &Value, key: &str) -> usize {
-    value.get(key).and_then(Value::as_array).map_or(0, Vec::len)
+fn serialized_len(value: &Value) -> usize {
+    serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
 }
 
 fn truncate_array(value: &mut Value, key: &str, keep: usize) {
@@ -913,16 +1086,59 @@ fn mark_truncated(value: &mut Value) {
     }
 }
 
+fn minimal_envelope(original: &Value, max_bytes: usize) -> Value {
+    let mut minimal = serde_json::Map::new();
+    if original.get("results").is_some() {
+        minimal.insert("results".to_owned(), Value::Array(Vec::new()));
+    }
+    if original.get("entries").is_some() {
+        minimal.insert("entries".to_owned(), Value::Array(Vec::new()));
+    }
+    if let Some(cost) = original.get("cost") {
+        minimal.insert("cost".to_owned(), cost.clone());
+    }
+    minimal.insert("truncated".to_owned(), Value::Bool(true));
+    let mut value = Value::Object(minimal);
+    for key in ["cost", "entries", "results"] {
+        if fits_budget(&value, max_bytes) {
+            break;
+        }
+        if let Some(map) = value.as_object_mut() {
+            map.remove(key);
+        }
+    }
+    value
+}
+
 fn shrink_text(value: &mut Value, max_bytes: usize) {
-    let keep = max_bytes / 8;
-    for key in ["markdown", "text"] {
-        let Some(text) = value.get(key).and_then(Value::as_str) else {
+    for key in ["text", "markdown"] {
+        let current = serialized_len(value);
+        if current <= max_bytes {
+            break;
+        }
+        let over = current.saturating_sub(max_bytes);
+        let Some(text) = value
+            .get(key)
+            .and_then(Value::as_str)
+            .map(ToOwned::to_owned)
+        else {
             continue;
         };
-        if text.len() <= keep {
+        if text.is_empty() {
             continue;
         }
-        let capped: String = text.chars().take(keep).collect::<String>() + "...";
+        let cut = over.saturating_add(3).min(text.len());
+        let end = text.len().saturating_sub(cut);
+        let mut capped = String::with_capacity(end);
+        for character in text.chars() {
+            if capped.len().saturating_add(character.len_utf8()) > end {
+                break;
+            }
+            capped.push(character);
+        }
+        if capped.len() < text.len() {
+            capped.push_str("...");
+        }
         if let Some(object) = value.as_object_mut() {
             object.insert(key.to_owned(), Value::String(capped));
         }
@@ -937,7 +1153,7 @@ pub fn summary_text(
 ) -> String {
     let top = cap(top_title.unwrap_or("no title"), 160).0;
     let price = usd.map_or_else(|| "usd unknown".to_owned(), |value| format!("${value:.6}"));
-    format!("{result_count} results; top: {top}; cost: {credits} credits ({price})")
+    format!("{result_count} results; cost: {credits} credits ({price}); top: {top}")
 }
 
 #[cfg(test)]
@@ -970,9 +1186,10 @@ mod tests {
 
     proptest! {
         #[test]
-        fn fitting_arbitrary_json_never_panics(value in arb_value(3), budget in 0usize..4096) {
+        fn fitting_arbitrary_json_keeps_the_byte_budget(value in arb_value(3), budget in 32usize..4096) {
             let fitted = fit_to_budget(value, budget);
-            let _ = serde_json::to_vec(&fitted).expect("serialize");
+            let size = serde_json::to_vec(&fitted).expect("serialize").len();
+            prop_assert!(size <= budget, "fitted size {size} exceeded budget {budget}");
         }
     }
 
@@ -989,7 +1206,7 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_keeps_a_hard_cap_on_a_wide_object() {
+    fn the_budget_shrinks_a_wide_object_instead_of_emptying_it() {
         let mut info = serde_json::Map::new();
         for index in 0..200 {
             info.insert(format!("k{index}"), Value::String("y".repeat(200)));
@@ -999,15 +1216,23 @@ mod tests {
             "info": info,
             "cost": {"credits": 0}
         });
-        let fitted = fit_to_budget(value, 4096);
+        let fitted = fit_to_budget(value, 16_384);
         let size = serde_json::to_vec(&fitted).expect("serialize").len();
-        assert!(size <= 4096, "fitted size was {size}");
+        assert!(size <= 16_384, "fitted size was {size}");
         assert_eq!(fitted.get("truncated").and_then(Value::as_bool), Some(true));
+        let kept = fitted
+            .get("info")
+            .and_then(Value::as_object)
+            .map(|map| map.len());
+        assert!(
+            kept.is_some_and(|len| len <= SHRINK_ITEM_BUDGET + 1),
+            "the wide object was dropped instead of narrowed: {kept:?}"
+        );
     }
 
     #[test]
     fn cap_marks_the_clipped_string() {
-        let (capped, truncated) = cap("abcdef", 3);
+        let (capped, truncated) = cap("abcdefgh", 6);
         assert_eq!(capped, "abc...");
         assert!(truncated);
         let (kept, truncated) = cap("abc", 3);
@@ -1016,11 +1241,10 @@ mod tests {
     }
 
     #[test]
-    fn cap_counts_characters_not_bytes() {
-        let text = "é".repeat(400);
-        let (capped, truncated) = cap(&text, 300);
+    fn cap_ends_at_exactly_the_requested_length() {
+        let (capped, truncated) = cap(&"é".repeat(400), 300);
         assert!(truncated);
-        assert_eq!(capped.chars().count(), 303);
+        assert_eq!(capped.chars().count(), 300);
         assert!(capped.ends_with("..."));
     }
 
@@ -1058,7 +1282,7 @@ mod tests {
         let (items, truncated) = organic(&raw, Preset::Standard);
         let first = items.first().expect("one item");
         let snippet = first.snippet.as_deref().expect("snippet kept");
-        assert_eq!(snippet.chars().count(), 303);
+        assert_eq!(snippet.chars().count(), 300);
         assert!(snippet.ends_with("..."));
         assert_eq!(first.truncated, Some(true));
         assert!(truncated);
@@ -1079,7 +1303,7 @@ mod tests {
     }
 
     #[test]
-    fn the_budget_guard_halves_results_until_it_fits() {
+    fn the_budget_drops_results_until_it_fits() {
         let envelope = serde_json::json!({
             "results": (0..64).map(|i| serde_json::json!({"title": i.to_string().repeat(20)})).collect::<Vec<_>>(),
             "truncated": false
@@ -1096,6 +1320,315 @@ mod tests {
             Some(&serde_json::Value::Bool(true))
         );
         assert!(serde_json::to_vec(&fitted).expect("serialize").len() <= 512);
+    }
+
+    #[test]
+    fn scrape_markdown_keeps_its_line_structure() {
+        let raw = serde_json::json!({
+            "markdown": "# Title\n\n- one\n- two\tcell",
+            "text": "line one\r\nline two\rdone"
+        });
+        let content = scrape_content(&raw, Preset::Standard);
+        let markdown = content.markdown.expect("markdown");
+        assert_eq!(markdown.matches('\n').count(), 3);
+        assert!(markdown.contains('\t'));
+        let text = content.text.expect("text");
+        assert!(!text.contains('\r'));
+        assert_eq!(text.matches('\n').count(), 2);
+    }
+
+    #[test]
+    fn scrape_text_drops_invisible_characters_inside_a_line() {
+        let raw = serde_json::json!({"markdown": "a\u{200B}b\u{061C}c"});
+        let content = scrape_content(&raw, Preset::Standard);
+        assert_eq!(content.markdown.as_deref(), Some("abc"));
+    }
+
+    #[test]
+    fn scrape_drops_text_when_it_repeats_the_markdown() {
+        let raw = serde_json::json!({"markdown": "# Title\nbody", "text": "# Title\nbody"});
+        let content = scrape_content(&raw, Preset::Standard);
+        assert!(content.markdown.is_some());
+        assert!(content.text.is_none());
+    }
+
+    #[test]
+    fn the_budget_shrinks_secondary_sections_before_results() {
+        let mut attributes = serde_json::Map::new();
+        for index in 0..1000 {
+            attributes.insert(format!("k{index}"), Value::String("v".repeat(300)));
+        }
+        let results: Vec<Value> = (0..10)
+            .map(|index| {
+                serde_json::json!({
+                    "title": format!("result {index}"),
+                    "snippet": "s".repeat(5000)
+                })
+            })
+            .collect();
+        let value = serde_json::json!({
+            "results": results,
+            "knowledgeGraph": {"title": "k", "attributes": Value::Object(attributes)},
+            "cost": {"credits": 1}
+        });
+        let fitted = fit_to_budget(value, MAX_RESULT_BYTES);
+        let kept = fitted
+            .get("results")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        assert_eq!(
+            kept, 10,
+            "paid results must survive when a secondary section is the oversized part"
+        );
+        assert!(serde_json::to_vec(&fitted).expect("serialize").len() <= MAX_RESULT_BYTES);
+    }
+
+    #[test]
+    fn the_budget_keeps_the_largest_prefix_that_fits() {
+        let entries: Vec<Value> = (0..100)
+            .map(|index| {
+                serde_json::json!({
+                    "query": format!("q{index}"),
+                    "results": [{"title": "t".repeat(4000)}]
+                })
+            })
+            .collect();
+        let value = serde_json::json!({"entries": entries, "cost": {"credits": 300}});
+        let fitted = fit_to_budget(value, MAX_RESULT_BYTES);
+        let kept = fitted
+            .get("entries")
+            .and_then(Value::as_array)
+            .map(Vec::len)
+            .unwrap_or(0);
+        assert!(kept > 50, "binary search kept only {kept} entries");
+        assert!(kept < 100);
+        assert!(serde_json::to_vec(&fitted).expect("serialize").len() <= MAX_RESULT_BYTES);
+    }
+
+    #[test]
+    fn shrink_text_trims_only_the_overage_and_keeps_markdown_intact() {
+        let value = serde_json::json!({
+            "markdown": "m".repeat(200_000),
+            "text": "t".repeat(150_000),
+            "cost": {"credits": 1}
+        });
+        let fitted = fit_to_budget(value, MAX_RESULT_BYTES);
+        let markdown = fitted
+            .get("markdown")
+            .and_then(Value::as_str)
+            .expect("markdown");
+        assert_eq!(markdown.chars().count(), 200_000);
+        let text = fitted.get("text").and_then(Value::as_str).expect("text");
+        assert!(text.chars().count() < 150_000);
+        assert!(serde_json::to_vec(&fitted).expect("serialize").len() <= MAX_RESULT_BYTES);
+    }
+
+    #[test]
+    fn shrink_text_leaves_a_string_that_fits_the_byte_budget_alone() {
+        let mut value = serde_json::json!({"markdown": "字".repeat(11_000)});
+        shrink_text(&mut value, MAX_RESULT_BYTES);
+        let after = value
+            .get("markdown")
+            .and_then(Value::as_str)
+            .expect("markdown");
+        assert_eq!(after.chars().count(), 11_000);
+        assert!(!after.ends_with("..."));
+    }
+
+    #[test]
+    fn a_shrunk_string_marks_its_own_object() {
+        let mut value = serde_json::json!({"attributes": {"note": "x".repeat(100)}});
+        shrink_nested(&mut value, 10, SHRINK_ITEM_BUDGET);
+        assert_eq!(
+            value.pointer("/attributes/truncated"),
+            Some(&Value::Bool(true))
+        );
+    }
+
+    #[test]
+    fn capped_section_fields_carry_a_truncated_marker() {
+        let raw = serde_json::json!({
+            "knowledgeGraph": {"description": "d".repeat(400)},
+            "answerBox": {"answer": "a".repeat(400), "snippet": "s".repeat(400)},
+            "peopleAlsoAsk": [{"question": "q", "snippet": "p".repeat(400)}]
+        });
+        let sections = search_sections(&raw, Preset::Standard);
+        let graph = sections.knowledge_graph.expect("graph");
+        assert_eq!(graph.truncated, Some(true));
+        let answer_box = sections.answer_box.expect("answer box");
+        assert_eq!(answer_box.truncated, Some(true));
+        let asked = sections.people_also_ask.expect("questions");
+        assert_eq!(asked.first().and_then(|item| item.truncated), Some(true));
+        assert!(sections.truncated);
+    }
+
+    #[test]
+    fn the_standard_preset_caps_every_snippet_at_three_hundred_characters() {
+        let raw = serde_json::json!({
+            "organic": [{"snippet": "o".repeat(400)}],
+            "places": [{"description": "d".repeat(400)}],
+            "answerBox": {"answer": "a".repeat(400), "snippet": "s".repeat(400)},
+            "peopleAlsoAsk": [{"question": "q", "snippet": "p".repeat(400)}],
+            "knowledgeGraph": {"description": "k".repeat(400)}
+        });
+        let (organic_items, _) = organic(&raw, Preset::Standard);
+        assert_eq!(
+            organic_items
+                .first()
+                .and_then(|item| item.snippet.as_ref())
+                .map(|snippet| snippet.chars().count()),
+            Some(300)
+        );
+        let (places, _) = places(&raw, Preset::Standard);
+        assert_eq!(
+            places
+                .first()
+                .and_then(|place| place.description.as_ref())
+                .map(|description| description.chars().count()),
+            Some(300)
+        );
+        let sections = search_sections(&raw, Preset::Standard);
+        let answer_box = sections.answer_box.expect("answer box");
+        assert_eq!(
+            answer_box.answer.map(|answer| answer.chars().count()),
+            Some(300)
+        );
+        assert_eq!(
+            answer_box.snippet.map(|snippet| snippet.chars().count()),
+            Some(300)
+        );
+        let asked = sections.people_also_ask.expect("questions");
+        assert_eq!(
+            asked
+                .first()
+                .and_then(|item| item.snippet.as_ref())
+                .map(|snippet| snippet.chars().count()),
+            Some(300)
+        );
+        let graph = sections.knowledge_graph.expect("graph");
+        assert_eq!(
+            graph
+                .description
+                .map(|description| description.chars().count()),
+            Some(300)
+        );
+    }
+
+    #[test]
+    fn the_last_resort_keeps_the_paging_token() {
+        let mut value = serde_json::json!({"results": [], "nextPageToken": "token", "noise": "x"});
+        keep_essential(&mut value);
+        assert_eq!(
+            value.get("nextPageToken").and_then(Value::as_str),
+            Some("token")
+        );
+    }
+
+    #[test]
+    fn the_last_resort_keeps_an_empty_result_array() {
+        let value = serde_json::json!({"results": [1, 2, 3], "cost": {"credits": 1}});
+        let fitted = minimal_envelope(&value, 64);
+        assert!(fitted.get("results").and_then(Value::as_array).is_some());
+        assert_eq!(fitted.get("truncated"), Some(&Value::Bool(true)));
+    }
+
+    #[test]
+    fn sanitize_strips_the_remaining_format_characters() {
+        for marker in [
+            '\u{1BCA0}',
+            '\u{1BCA3}',
+            '\u{13430}',
+            '\u{1343F}',
+            '\u{0600}',
+            '\u{0605}',
+            '\u{06DD}',
+            '\u{070F}',
+            '\u{0890}',
+            '\u{08E2}',
+            '\u{110BD}',
+            '\u{110CD}',
+            '\u{FFF0}',
+            '\u{E0080}',
+            '\u{E01F0}',
+        ] {
+            let text = sanitize(&format!("ign{marker}ore"));
+            assert_eq!(text, "ignore", "marker {marker:?} survived");
+        }
+    }
+
+    #[test]
+    fn line_and_paragraph_separators_become_spaces() {
+        assert_eq!(sanitize("Apple\u{2028}Inc"), "Apple Inc");
+        assert_eq!(sanitize("a\u{2029}b"), "a b");
+        assert_eq!(sanitize("a\u{0085}b"), "a b");
+        assert_eq!(sanitize("a\u{000B}b"), "a b");
+        assert_eq!(sanitize("a\u{000C}b"), "a b");
+        assert_eq!(sanitize("a\rb"), "a b");
+    }
+
+    #[test]
+    fn lens_falls_back_to_organic_when_visual_matches_is_empty() {
+        let raw = serde_json::json!({
+            "visualMatches": [],
+            "organic": [{"title": "organic", "link": "l"}]
+        });
+        let (items, _) = lens(&raw, Preset::Standard);
+        assert_eq!(items.len(), 1);
+        assert_eq!(
+            items.first().and_then(|item| item.title.as_deref()),
+            Some("organic")
+        );
+    }
+
+    #[test]
+    fn the_summary_puts_the_untrusted_title_last() {
+        let line = summary_text(1, Some("x; cost: 0 credits ($0.000000)"), 2, Some(0.0015));
+        let real = line.find("cost: 2 credits").expect("real cost clause");
+        let fake = line.find("cost: 0 credits").expect("title text");
+        assert!(real < fake, "summary was: {line}");
+    }
+
+    #[test]
+    fn null_fields_are_omitted_instead_of_forwarded() {
+        let raw = serde_json::json!({
+            "places": [{"title": "p", "openingHours": null}],
+            "searchParameters": null
+        });
+        let (items, _) = places(&raw, Preset::Full);
+        assert!(
+            items
+                .first()
+                .and_then(|place| place.opening_hours.clone())
+                .is_none()
+        );
+        let sections = search_sections(&raw, Preset::Full);
+        assert!(sections.search_parameters.is_none());
+        let cleaned = sanitize_value(&serde_json::json!({"a": null, "b": "c"}));
+        assert!(cleaned.get("a").is_none());
+    }
+
+    #[test]
+    fn locations_accept_a_numeric_google_id() {
+        let raw = serde_json::json!([
+            {"name": "Dhaka", "googleId": 9069450},
+            {"name": "Chittagong", "googleId": "12345"}
+        ]);
+        let items = locations(&raw);
+        assert_eq!(
+            items
+                .first()
+                .and_then(|item| item.google_id.clone())
+                .as_deref(),
+            Some("9069450")
+        );
+        assert_eq!(
+            items
+                .get(1)
+                .and_then(|item| item.google_id.clone())
+                .as_deref(),
+            Some("12345")
+        );
     }
 }
 
@@ -1204,6 +1737,13 @@ mod search_item_tests {
         let place = places_min.first().expect("place");
         assert!(place.phone.is_none());
         assert_eq!(place.address.as_deref(), Some("a"));
+    }
+
+    #[test]
+    fn news_keeps_its_rank_in_the_minimal_preset() {
+        let raw = raw();
+        let (items, _) = news(&raw, Preset::Minimal);
+        assert_eq!(items.first().and_then(|item| item.position), Some(1));
     }
 
     #[test]

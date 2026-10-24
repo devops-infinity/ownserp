@@ -43,7 +43,7 @@ skip_check() {
 }
 
 SHELL_FILES=(tools/*.sh .githooks/pre-commit .githooks/pre-push)
-bash -n "${SHELL_FILES[@]}" || die "a shell script has a syntax error"
+check_shell_syntax "${SHELL_FILES[@]}"
 log_line SUCCESS "shell syntax"
 
 require_tool cargo "install Rust from https://rustup.rs"

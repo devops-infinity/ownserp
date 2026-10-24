@@ -55,7 +55,7 @@ Latency is a wash. Both servers wait on Serper, which typically answers in 1 to 
 
 - OwnSERP starts in single-digit milliseconds, so a client that launches the server on every request does not pay a startup cost.
 - Memory stays around 13 MB, one fifth of the Python server, which matters when several clients run at once.
-- Every response is smaller for the same live data, which leaves more room in a model's context.
+- Payload size favors OwnSERP on ten of the twelve shared calls, which leaves more room in a model's context.
 - All fifteen Serper endpoints are covered, plus health, locations, and a session report. The Python server leaves out locations and health entirely.
 - Every result carries a cost object, and every call lands in the local ledger.
 - Per-call latency is set by Serper and is not a reason to choose either server.

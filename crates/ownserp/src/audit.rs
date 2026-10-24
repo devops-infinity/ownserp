@@ -1,5 +1,5 @@
 use anyhow::{Context, bail};
-use ownserp_core::{Overrides, Settings, default_data_dir};
+use ownserp_core::{Overrides, Settings};
 
 use crate::cli::{AuditAction, AuditArgs};
 use crate::output::emit;
@@ -7,6 +7,7 @@ use crate::output::emit;
 pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
     match args.action {
         AuditAction::Verify { ledger_file } => {
+            let given = ledger_file.is_some();
             let path = match ledger_file {
                 Some(path) => path,
                 None => {
@@ -16,7 +17,7 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
                 }
             };
             if !path.exists() {
-                if path_is_under_the_default_data_dir(&path) {
+                if !given {
                     emit(&format!("no ledger yet at {}", path.display()))?;
                     return Ok(());
                 }
@@ -38,17 +39,14 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
             let (rows, archive) = ownserp_core::rotate(&path).context("rotating the ledger")?;
             emit(&format!("verified {rows} rows, hash chain intact"))?;
             emit(&format!("archived to {}", archive.display()))?;
-            emit(&format!(
-                "the next start writes a fresh chain at {}",
-                path.display()
-            ))?;
+            emit(&next_write_message(&path))?;
             Ok(())
         }
     }
 }
 
-fn path_is_under_the_default_data_dir(path: &std::path::Path) -> bool {
-    path.starts_with(default_data_dir())
+fn next_write_message(path: &std::path::Path) -> String {
+    format!("the next write starts a fresh chain at {}", path.display())
 }
 
 #[cfg(test)]
@@ -112,13 +110,23 @@ mod tests {
     }
 
     #[test]
-    fn a_file_under_the_data_directory_counts_as_the_default() {
-        assert!(path_is_under_the_default_data_dir(
-            &ownserp_core::default_data_dir().join("ledger/calls.jsonl")
-        ));
-        assert!(!path_is_under_the_default_data_dir(std::path::Path::new(
-            "/tmp/calls.jsonl"
-        )));
+    fn the_rotation_message_names_the_next_write() {
+        let message = next_write_message(std::path::Path::new("/tmp/calls.jsonl"));
+        assert!(message.contains("next write"));
+        assert!(!message.contains("next start"));
+    }
+
+    #[test]
+    fn verifying_a_missing_named_ledger_under_the_data_directory_is_an_error() {
+        let path = ownserp_core::default_data_dir()
+            .join("ledger")
+            .join(format!("ownserp-missing-{}.jsonl", std::process::id()));
+        let outcome = run(AuditArgs {
+            action: AuditAction::Verify {
+                ledger_file: Some(path),
+            },
+        });
+        assert!(outcome.is_err());
     }
 
     #[test]

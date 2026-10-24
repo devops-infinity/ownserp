@@ -311,6 +311,11 @@ async fn read_response(response: Response) -> Result<Value> {
     if code == 429 || exhausted {
         return Err(Error::RateLimited { message });
     }
+    let message = if (300..400).contains(&code) {
+        format!("{message} (a redirect, which is not followed)")
+    } else {
+        message.to_owned()
+    };
     Err(Error::Upstream {
         status: code,
         message,

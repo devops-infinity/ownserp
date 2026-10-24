@@ -14,4 +14,3 @@ target
 id_rsa*
 id_ed25519*
 dist
-packages/npm/node_modules

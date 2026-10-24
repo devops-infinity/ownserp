@@ -3,7 +3,6 @@ set -Eeuo pipefail
 
 REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$REPO/tools/lib.sh"
-require_bash 4.4
 
 if ! command -v gitleaks >/dev/null 2>&1; then
 	log_line FAILED "gitleaks is required for the commit secret scan; install it with: brew install gitleaks"

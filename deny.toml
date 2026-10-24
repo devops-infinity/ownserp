@@ -2,9 +2,9 @@
 version = 2
 yanked = "deny"
 ignore = [
-    { id = "RUSTSEC-2026-0370", reason = "zvariant is flagged unmaintained, not vulnerable; it reaches the tree only through the Secret Service keychain store, and the alternatives lose the key at logout or need libdbus at build time. Recheck at the next dependency refresh, by 2027-01-31." },
-    { id = "RUSTSEC-2026-0371", reason = "zbus_names is flagged unmaintained, not vulnerable; same path and same review date as RUSTSEC-2026-0370." },
-    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is flagged unmaintained, not vulnerable; same path and same review date as RUSTSEC-2026-0370." },
+    { id = "RUSTSEC-2026-0370", reason = "zvariant is flagged unmaintained, not vulnerable; it reaches the tree only through the Secret Service keychain store, and the alternatives lose the key at logout or need libdbus at build time. The real fix is zbus 6.0, into which zvariant was merged, but zbus-secret-service-keyring-store 1.0.1 still requires zbus 5. Move to zbus 6 once that store supports it. Recheck at the next dependency refresh, by 2027-01-31." },
+    { id = "RUSTSEC-2026-0371", reason = "zbus_names is flagged unmaintained, not vulnerable; same path and the same zbus 6 upgrade as RUSTSEC-2026-0370, rechecked by 2027-01-31." },
+    { id = "RUSTSEC-2026-0372", reason = "zvariant_derive is flagged unmaintained, not vulnerable; same path and the same zbus 6 upgrade as RUSTSEC-2026-0370, rechecked by 2027-01-31." },
 ]
 
 [licenses]

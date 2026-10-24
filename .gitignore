@@ -2,7 +2,6 @@
 *.mcpb
 .DS_Store
 /dist
-/benchmarks/results.json
 __pycache__/
 *.py[cod]
 .venv/

@@ -135,9 +135,27 @@ pub(crate) enum ConfigAction {
     #[command(about = "Read the API key from stdin and store it in the OS keychain")]
     SetApiKey,
     #[command(about = "Print the resolved settings with the key masked")]
-    Show,
+    Show(ConfigShowArgs),
     #[command(about = "Remove the stored API key from the OS keychain")]
     DeleteApiKey,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ConfigShowArgs {
+    #[arg(long, help = "Path to a TOML profile file")]
+    pub(crate) profile: Option<PathBuf>,
+    #[arg(long, help = "Directory that holds the call ledger")]
+    pub(crate) ledger_dir: Option<PathBuf>,
+}
+
+impl ConfigShowArgs {
+    pub(crate) fn into_overrides(self) -> Overrides {
+        Overrides {
+            profile: self.profile,
+            ledger_dir: self.ledger_dir,
+            ..Overrides::default()
+        }
+    }
 }
 
 #[derive(Debug, Args)]
@@ -157,7 +175,7 @@ pub(crate) enum AuditAction {
         ledger_file: Option<PathBuf>,
     },
     #[command(
-        about = "Verify the chain, archive the ledger, and leave a fresh one for the next start"
+        about = "Verify the chain, archive the ledger, and start a fresh chain on the next write"
     )]
     Rotate {
         #[arg(
@@ -184,6 +202,8 @@ fn parse_pack(raw: &str) -> Result<PackTier, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use clap::CommandFactory;
 
     #[test]
     fn pack_names_parse_and_unknown_names_fail() {
@@ -246,8 +266,33 @@ mod tests {
     }
 
     #[test]
+    fn config_show_flags_become_overrides() {
+        let args = ConfigShowArgs {
+            profile: Some(PathBuf::from("/tmp/profile.toml")),
+            ledger_dir: Some(PathBuf::from("/tmp/ledger")),
+        };
+        let overrides = args.into_overrides();
+        assert_eq!(overrides.profile, Some(PathBuf::from("/tmp/profile.toml")));
+        assert_eq!(overrides.ledger_dir, Some(PathBuf::from("/tmp/ledger")));
+    }
+
+    #[test]
+    fn the_rotate_help_names_the_next_write() {
+        let command = Cli::command();
+        let audit = command
+            .get_subcommands()
+            .find(|command| command.get_name() == "audit")
+            .expect("audit");
+        let rotate = audit
+            .get_subcommands()
+            .find(|command| command.get_name() == "rotate")
+            .expect("rotate");
+        let about = rotate.get_about().expect("about").to_string();
+        assert!(about.contains("next write"));
+    }
+
+    #[test]
     fn the_command_tree_is_internally_consistent() {
-        use clap::CommandFactory;
         Cli::command().debug_assert();
     }
 }

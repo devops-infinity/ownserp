@@ -51,7 +51,7 @@ impl SearchArgs {
             body.insert("gl".to_owned(), Value::String(validate_code(gl, "gl")?));
         }
         if let Some(hl) = &self.hl {
-            body.insert("hl".to_owned(), Value::String(validate_code(hl, "hl")?));
+            body.insert("hl".to_owned(), Value::String(validate_language(hl, "hl")?));
         }
         if let Some(num) = self.num {
             if !(1..=100).contains(&num) {
@@ -129,6 +129,34 @@ fn validate_code(raw: &str, field: &str) -> Result<String> {
     Ok(trimmed.to_ascii_lowercase())
 }
 
+fn validate_language(raw: &str, field: &str) -> Result<String> {
+    let trimmed = raw.trim();
+    let mut parts = trimmed.split('-');
+    let base = parts.next().unwrap_or_default();
+    let region = parts.next();
+    let base_ok = (2..=3).contains(&base.chars().count())
+        && base
+            .chars()
+            .all(|character| character.is_ascii_alphabetic());
+    let region_ok = match region {
+        None => true,
+        Some(region) => {
+            (2..=3).contains(&region.chars().count())
+                && region
+                    .chars()
+                    .all(|character| character.is_ascii_alphanumeric())
+        }
+    };
+    let valid = base_ok && region_ok && parts.next().is_none();
+    if !valid {
+        let shown: String = raw.chars().take(16).collect();
+        return Err(Error::InvalidArgs(format!(
+            "{field} takes a two or three letter code with an optional region, got: {shown}"
+        )));
+    }
+    Ok(trimmed.to_ascii_lowercase())
+}
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ReviewsArgs {
@@ -192,7 +220,7 @@ impl ReviewsArgs {
             body.insert("gl".to_owned(), Value::String(validate_code(gl, "gl")?));
         }
         if let Some(hl) = &self.hl {
-            body.insert("hl".to_owned(), Value::String(validate_code(hl, "hl")?));
+            body.insert("hl".to_owned(), Value::String(validate_language(hl, "hl")?));
         }
         if let Some(token) = &self.next_page_token {
             body.insert(
@@ -265,7 +293,7 @@ impl LensArgs {
             body.insert("gl".to_owned(), Value::String(validate_code(gl, "gl")?));
         }
         if let Some(hl) = &self.hl {
-            body.insert("hl".to_owned(), Value::String(validate_code(hl, "hl")?));
+            body.insert("hl".to_owned(), Value::String(validate_language(hl, "hl")?));
         }
         Ok(Value::Object(body))
     }
@@ -332,6 +360,11 @@ fn valid_url(raw: &str) -> Result<String> {
     if parsed.host_str().is_none() {
         return Err(Error::InvalidArgs("url has no host".into()));
     }
+    if !parsed.username().is_empty() || parsed.password().is_some() {
+        return Err(Error::InvalidArgs(
+            "url must not carry a username or password".into(),
+        ));
+    }
     let normalized = parsed.as_str().to_owned();
     if normalized.chars().count() > 2048 {
         return Err(Error::InvalidArgs(
@@ -395,9 +428,50 @@ impl BatchKind {
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct BatchQueryArgs {
+    pub q: String,
+    #[serde(default)]
+    pub gl: Option<String>,
+    #[serde(default)]
+    pub hl: Option<String>,
+    #[serde(default)]
+    pub num: Option<u8>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub tbs: Option<TimeFilter>,
+    #[serde(default)]
+    pub autocorrect: Option<bool>,
+    #[serde(default)]
+    pub location: Option<String>,
+    #[serde(default)]
+    pub ll: Option<MapViewport>,
+}
+
+impl BatchQueryArgs {
+    fn body(&self, endpoint: Endpoint) -> Result<Value> {
+        SearchArgs {
+            q: self.q.clone(),
+            gl: self.gl.clone(),
+            hl: self.hl.clone(),
+            num: self.num,
+            page: self.page,
+            tbs: self.tbs,
+            autocorrect: self.autocorrect,
+            location: self.location.clone(),
+            ll: self.ll.clone(),
+            fields: None,
+            result_text: None,
+        }
+        .body(endpoint)
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct BatchArgs {
     pub kind: BatchKind,
-    pub queries: Vec<SearchArgs>,
+    pub queries: Vec<BatchQueryArgs>,
     #[serde(default)]
     pub fields: Option<Preset>,
     #[serde(default)]
@@ -576,6 +650,79 @@ mod tests {
             body.get("includeImages").and_then(Value::as_bool),
             Some(false)
         );
+    }
+
+    #[test]
+    fn hl_accepts_three_letter_bases_and_regions() {
+        for code in ["zh-cn", "zh-tw", "pt-br", "es-419", "fil", "EN-gb"] {
+            let args = parse_search_args(serde_json::json!({"q": "x", "hl": code}));
+            let body = args.body(Endpoint::Search).expect("body");
+            let expected = code.to_ascii_lowercase();
+            assert_eq!(
+                body.get("hl").and_then(Value::as_str),
+                Some(expected.as_str()),
+                "hl {code} was refused"
+            );
+        }
+    }
+
+    #[test]
+    fn gl_still_takes_only_two_letters() {
+        let args = parse_search_args(serde_json::json!({"q": "x", "gl": "zh-cn"}));
+        assert!(args.body(Endpoint::Search).is_err());
+    }
+
+    #[test]
+    fn hl_rejects_a_malformed_region() {
+        for code in ["en-", "en-usa-extra", "e", "123", "en_US", "fil-"] {
+            let args = parse_search_args(serde_json::json!({"q": "x", "hl": code}));
+            assert!(
+                args.body(Endpoint::Search).is_err(),
+                "hl {code} was accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn batch_queries_reject_per_query_presentation_fields() {
+        let with_fields = serde_json::from_value::<BatchArgs>(
+            serde_json::json!({"kind": "search", "queries": [{"q": "a", "fields": "full"}]}),
+        );
+        assert!(with_fields.is_err());
+        let with_text = serde_json::from_value::<BatchArgs>(
+            serde_json::json!({"kind": "search", "queries": [{"q": "a", "result_text": "full"}]}),
+        );
+        assert!(with_text.is_err());
+    }
+
+    #[test]
+    fn batch_queries_still_build_their_body() {
+        let args: BatchArgs = serde_json::from_value(
+            serde_json::json!({"kind": "search", "queries": [{"q": "a", "num": 5}]}),
+        )
+        .expect("parse");
+        let bodies = args.bodies().expect("bodies");
+        let num = bodies
+            .first()
+            .and_then(|body| body.get("num"))
+            .and_then(Value::as_u64);
+        assert_eq!(num, Some(5));
+    }
+
+    #[test]
+    fn urls_with_embedded_credentials_are_refused() {
+        for url in [
+            "https://user:secret@example.org/x",
+            "https://user@example.org/x",
+        ] {
+            let args: ScrapeArgs =
+                serde_json::from_value(serde_json::json!({"url": url})).expect("parse");
+            assert!(args.body().is_err(), "accepted {url}");
+        }
+        let clean: ScrapeArgs =
+            serde_json::from_value(serde_json::json!({"url": "https://example.org/x"}))
+                .expect("parse");
+        assert!(clean.body().is_ok());
     }
 }
 

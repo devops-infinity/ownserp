@@ -127,6 +127,7 @@ fn fixture() -> Value {
     ];
 
     let graph = KnowledgeGraph {
+            truncated: None,
         title: Some("Apple".to_owned()),
         kind: Some("Technology company".to_owned()),
         website: Some("https://www.apple.com".to_owned()),
@@ -138,6 +139,7 @@ fn fixture() -> Value {
     };
 
     let answer = AnswerBox {
+            truncated: None,
         title: Some("Apple Inc.".to_owned()),
         answer: Some("Apple Inc. designs, manufactures and markets smartphones, personal computers, tablets, wearables and accessories.".to_owned()),
         snippet: None,
@@ -147,12 +149,14 @@ fn fixture() -> Value {
 
     let questions = vec![
         PeopleAlsoAsk {
+            truncated: None,
             question: Some("What does Apple Inc do?".to_owned()),
             snippet: Some("Apple designs and sells consumer electronics and software.".to_owned()),
             title: Some("Apple Inc. | History, Products, Headquarters and Facts".to_owned()),
             link: Some("https://www.britannica.com/topic/Apple-Inc".to_owned()),
         },
         PeopleAlsoAsk {
+            truncated: None,
             question: Some("Who founded Apple?".to_owned()),
             snippet: Some(
                 "Steve Jobs, Steve Wozniak and Ronald Wayne founded Apple in 1976.".to_owned(),
@@ -161,6 +165,7 @@ fn fixture() -> Value {
             link: Some("https://en.wikipedia.org/wiki/Apple_Inc.".to_owned()),
         },
         PeopleAlsoAsk {
+            truncated: None,
             question: Some("Where is Apple headquartered?".to_owned()),
             snippet: Some("Apple Park, One Apple Park Way, Cupertino, California.".to_owned()),
             title: Some("Apple Park".to_owned()),

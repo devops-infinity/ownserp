@@ -1,12 +1,13 @@
+use std::net::SocketAddr;
 use std::num::NonZeroU32;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context, Poll};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
-use axum::extract::{DefaultBodyLimit, Request, State};
+use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
 use axum::http::{
     HeaderValue, StatusCode,
     header::{AUTHORIZATION, RETRY_AFTER},
@@ -14,9 +15,10 @@ use axum::http::{
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
-use axum::serve::Listener;
+use axum::serve::{Listener, ListenerExt};
 use axum::{Router, middleware};
 use governor::clock::DefaultClock;
+use governor::state::keyed::DefaultKeyedStateStore;
 use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use rmcp::transport::StreamableHttpServerConfig;
@@ -40,22 +42,27 @@ const MAX_REQUEST_ID: usize = 128;
 const MIN_TOKEN_CHARS: usize = 32;
 const MAX_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_REQUESTS: usize = 128;
-const REQUEST_TIMEOUT_SECS: u64 = 120;
 const BODY_DEADLINE_SECS: u64 = 30;
 const SHUTDOWN_GRACE_SECS: u64 = 10;
+const FAILED_AUTH_PER_SECOND: u32 = 5;
+const CLIENT_ATTEMPTS: u64 = 3;
+const CLIENT_BACKOFF_TOTAL_MS: u64 = 1_250;
 
 type HttpLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
+type FailedAuthLimiter = RateLimiter<SocketAddr, DefaultKeyedStateStore<SocketAddr>, DefaultClock>;
 
 #[derive(Clone)]
 struct HttpState {
     tokens: Arc<Vec<secrecy::SecretString>>,
     metrics: Arc<Metrics>,
     limiter: Option<Arc<HttpLimiter>>,
+    failed_auth: Arc<FailedAuthLimiter>,
     gate: Arc<Semaphore>,
     request_seq: Arc<AtomicU64>,
     ready: bool,
     ready_message: Arc<str>,
     allowed_hosts: Arc<Vec<String>>,
+    request_deadline: Duration,
 }
 
 pub async fn serve_http(settings: Settings) -> Result<()> {
@@ -67,20 +74,14 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
             "OWN_SERPER_BEARER_TOKENS is required when bind is not a loopback address".into(),
         ));
     }
-    if let Some((index, _)) = tokens
-        .iter()
-        .enumerate()
-        .find(|(_, token)| token.expose_secret().chars().count() < MIN_TOKEN_CHARS)
-    {
-        return Err(Error::Config(format!(
-            "bearer token {} is shorter than {MIN_TOKEN_CHARS} characters; use a random value from a password manager",
-            index + 1
-        )));
-    }
+    validate_tokens(&tokens)?;
     let limiter = settings.http_qps().filter(|rate| *rate > 0).map(|rate| {
         let per_second = NonZeroU32::new(rate.max(1)).unwrap_or(NonZeroU32::MIN);
         Arc::new(RateLimiter::direct(Quota::per_second(per_second)))
     });
+    let failed_auth = Arc::new(RateLimiter::keyed(Quota::per_second(
+        NonZeroU32::new(FAILED_AUTH_PER_SECOND).unwrap_or(NonZeroU32::MIN),
+    )));
     let (ready, ready_message): (bool, Arc<str>) = if settings.api_key().is_some() {
         (true, Arc::from("ready"))
     } else {
@@ -90,7 +91,10 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         )
     };
     let allowed_hosts = allowed_hosts(&bind, settings.allowed_hosts());
-    let handler = OwnserpHandler::new(settings)?;
+    let request_deadline =
+        call_deadline(settings.request_timeout_secs(), settings.qps().get().get());
+    let handler = OwnserpHandler::with_deadline(settings, Some(request_deadline))?;
+    let cancel = handler.cancellation_token();
     let metrics = handler.metrics();
     let mut config = StreamableHttpServerConfig::default();
     config.json_response = true;
@@ -107,11 +111,13 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         tokens: Arc::new(tokens),
         metrics,
         limiter,
+        failed_auth,
         gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         request_seq: Arc::new(AtomicU64::new(0)),
         ready,
         ready_message,
         allowed_hosts: Arc::new(allowed_hosts.clone()),
+        request_deadline,
     };
     let protected = Router::new()
         .route("/readyz", get(readyz))
@@ -121,13 +127,14 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), gate_requests))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_bearer,
+            limit_requests,
         ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            limit_requests,
+            require_bearer,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), require_host))
+        .layer(middleware::from_fn(reject_origin))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             assign_request_id,
@@ -140,9 +147,10 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .route("/healthz", get(healthz))
         .merge(protected)
         .layer(middleware::from_fn(security_headers));
-    let listener = TcpListener::bind(&bind)
-        .await
-        .map_err(|error| Error::Config(format!("bind {bind}: {error}")))?;
+    let listener = TcpListener::bind(&bind).await.map_err(|error| Error::Io {
+        context: "binding the HTTP listener",
+        source: error,
+    })?;
     if !tokens_configured
         && !listener
             .local_addr()
@@ -163,14 +171,20 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
     let listener = LimitedListener {
         inner: listener,
         connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
-    };
-    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+    }
+    .tap_io(|_| {});
+    let server = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(async move {
         let _ = stop_rx.changed().await;
     });
     let mut handle = tokio::spawn(async move { server.await });
     tokio::select! {
         result = &mut handle => http_result(result),
         () = shutdown_signal() => {
+            cancel.cancel();
             let _ = stop_tx.send(true);
             match tokio::time::timeout(
                 std::time::Duration::from_secs(SHUTDOWN_GRACE_SECS),
@@ -198,8 +212,14 @@ fn http_result(
 ) -> Result<()> {
     match result {
         Ok(Ok(())) => Ok(()),
-        Ok(Err(error)) => Err(Error::Config(format!("http server: {error}"))),
-        Err(error) => Err(Error::Config(format!("http server task: {error}"))),
+        Ok(Err(error)) => Err(Error::Io {
+            context: "serving HTTP",
+            source: error,
+        }),
+        Err(error) => Err(Error::Io {
+            context: "waiting for the HTTP server task",
+            source: std::io::Error::other(error),
+        }),
     }
 }
 
@@ -333,6 +353,9 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
 }
 
 async fn limit_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
+    if request.uri().path() == "/readyz" {
+        return next.run(request).await;
+    }
     if let Some(limiter) = state.limiter.as_ref()
         && limiter.check().is_err()
     {
@@ -346,6 +369,13 @@ async fn limit_requests(State(state): State<HttpState>, request: Request, next: 
     next.run(request).await
 }
 
+async fn reject_origin(request: Request, next: Next) -> Response {
+    if request.headers().contains_key(axum::http::header::ORIGIN) {
+        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+    }
+    next.run(request).await
+}
+
 async fn gate_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
     let Ok(_permit) = state.gate.clone().try_acquire_owned() else {
         return (
@@ -355,12 +385,10 @@ async fn gate_requests(State(state): State<HttpState>, request: Request, next: N
         )
             .into_response();
     };
-    match tokio::time::timeout(
-        std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS),
-        next.run(request),
-    )
-    .await
-    {
+    let backstop = state
+        .request_deadline
+        .saturating_add(Duration::from_secs(SHUTDOWN_GRACE_SECS));
+    match tokio::time::timeout(backstop, next.run(request)).await {
         Ok(response) => response,
         Err(_) => (StatusCode::GATEWAY_TIMEOUT, "request deadline passed").into_response(),
     }
@@ -403,21 +431,19 @@ async fn assign_request_id(
 }
 
 async fn require_host(State(state): State<HttpState>, request: Request, next: Next) -> Response {
-    let host = request
-        .headers()
-        .get(axum::http::header::HOST)
-        .and_then(|value| value.to_str().ok())
-        .or_else(|| {
-            request
-                .uri()
-                .authority()
-                .map(|authority| authority.as_str())
-        });
+    let host = match request.headers().get(axum::http::header::HOST) {
+        Some(value) => value.to_str().ok().and_then(parse_host),
+        None => request
+            .uri()
+            .authority()
+            .and_then(|authority| parse_host(authority.as_str())),
+    };
     let accepted = host.is_some_and(|host| {
         state
             .allowed_hosts
             .iter()
-            .any(|allowed| host == allowed || host_without_port(host) == host_without_port(allowed))
+            .filter_map(|allowed| parse_host(allowed))
+            .any(|allowed| host_matches(&host, &allowed))
     });
     if accepted {
         next.run(request).await
@@ -426,48 +452,103 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
     }
 }
 
-fn host_without_port(value: &str) -> &str {
-    if let Some(rest) = value.strip_prefix('[') {
-        return rest.split(']').next().unwrap_or(rest);
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostIdentity {
+    host: String,
+    port: Option<u16>,
+}
+
+fn parse_host(value: &str) -> Option<HostIdentity> {
+    let authority: axum::http::uri::Authority = value.parse().ok()?;
+    if authority.as_str().contains('@') {
+        return None;
     }
-    match value.rsplit_once(':') {
-        Some((head, port))
-            if !head.is_empty()
-                && !head.contains(':')
-                && !port.is_empty()
-                && port.bytes().all(|byte| byte.is_ascii_digit()) =>
-        {
-            head
+    let raw = authority.host();
+    let host = raw
+        .strip_prefix('[')
+        .and_then(|rest| rest.strip_suffix(']'))
+        .unwrap_or(raw);
+    let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+    if host.is_empty() {
+        return None;
+    }
+    Some(HostIdentity {
+        host,
+        port: authority.port_u16(),
+    })
+}
+
+fn host_matches(request: &HostIdentity, allowed: &HostIdentity) -> bool {
+    request.host == allowed.host
+        && match allowed.port {
+            Some(port) => request.port == Some(port),
+            None => true,
         }
-        _ => value,
-    }
 }
 
 async fn require_bearer(State(state): State<HttpState>, request: Request, next: Next) -> Response {
     if state.tokens.is_empty() {
         return next.run(request).await;
     }
-    let presented = request
-        .headers()
-        .get(AUTHORIZATION)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let accepted = presented.is_some_and(|token| {
+    let accepted = bearer_token(&request).is_some_and(|token| {
         state
             .tokens
             .iter()
             .any(|expected| token_matches(token, expected.expose_secret()))
     });
     if accepted {
-        next.run(request).await
-    } else {
-        (
-            StatusCode::UNAUTHORIZED,
-            [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
-            "unauthorized",
-        )
-            .into_response()
+        return next.run(request).await;
     }
+    if let Some(peer) = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|info| info.0)
+        && state.failed_auth.check_key(&peer).is_err()
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(RETRY_AFTER, "1")],
+            "rate limited",
+        )
+            .into_response();
+    }
+    (
+        StatusCode::UNAUTHORIZED,
+        [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
+        "unauthorized",
+    )
+        .into_response()
+}
+
+fn bearer_token(request: &Request) -> Option<&str> {
+    let value = request.headers().get(AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    scheme.eq_ignore_ascii_case("bearer").then_some(token)
+}
+
+fn validate_tokens(tokens: &[secrecy::SecretString]) -> Result<()> {
+    if let Some((index, _)) = tokens
+        .iter()
+        .enumerate()
+        .find(|(_, token)| token.expose_secret().chars().count() < MIN_TOKEN_CHARS)
+    {
+        return Err(Error::Config(format!(
+            "bearer token {} is shorter than {MIN_TOKEN_CHARS} characters; use a random value from a password manager",
+            index + 1
+        )));
+    }
+    if let Some((index, _)) = tokens.iter().enumerate().find(|(_, token)| {
+        !token
+            .expose_secret()
+            .chars()
+            .all(|character| ('\u{21}'..='\u{7e}').contains(&character))
+    }) {
+        return Err(Error::Config(format!(
+            "bearer token {} has a character outside the printable ASCII range 0x21 to 0x7E; a header value cannot carry it",
+            index + 1
+        )));
+    }
+    Ok(())
 }
 
 fn valid_request_id(value: &str) -> bool {
@@ -514,9 +595,24 @@ fn allowed_hosts(bind: &str, configured: Option<&[String]>) -> Vec<String> {
         return hosts.to_vec();
     }
     let host = host_from_bind(bind);
-    let mut hosts = vec![host.clone(), bind.to_owned(), format!("{host}:443")];
+    if unspecified_bind(bind) {
+        tracing::warn!(
+            bind = %bind,
+            "the bind address is unspecified and no allowed hosts are configured; requests will be rejected as host not allowed until OWN_SERPER_ALLOWED_HOSTS names the Host a client sends"
+        );
+    }
+    let authority_host = if host.contains(':') {
+        format!("[{host}]")
+    } else {
+        host.clone()
+    };
+    let mut hosts = vec![
+        authority_host.clone(),
+        bind.to_owned(),
+        format!("{authority_host}:443"),
+    ];
     if is_loopback(bind) {
-        for alias in ["localhost", "127.0.0.1", "::1"] {
+        for alias in ["localhost", "127.0.0.1", "[::1]"] {
             if !hosts.iter().any(|entry| entry == alias) {
                 hosts.push(alias.to_owned());
             }
@@ -530,6 +626,27 @@ fn host_from_bind(bind: &str) -> String {
         return rest.split(']').next().unwrap_or(rest).to_owned();
     }
     bind.split(':').next().unwrap_or(bind).to_owned()
+}
+
+fn unspecified_bind(bind: &str) -> bool {
+    host_from_bind(bind)
+        .parse::<std::net::IpAddr>()
+        .is_ok_and(|address| address.is_unspecified())
+}
+
+fn call_deadline(request_timeout_secs: u64, qps: u32) -> Duration {
+    // The client makes three attempts with 250 ms and 500 ms backoff, and each attempt waits one limiter slot.
+    let limiter_ms = 1000u64
+        .saturating_mul(CLIENT_ATTEMPTS)
+        .checked_div(u64::from(qps.max(1)))
+        .unwrap_or(0);
+    Duration::from_millis(
+        request_timeout_secs
+            .saturating_mul(CLIENT_ATTEMPTS)
+            .saturating_mul(1000)
+            .saturating_add(CLIENT_BACKOFF_TOTAL_MS)
+            .saturating_add(limiter_ms),
+    )
 }
 
 #[cfg(test)]
@@ -553,17 +670,26 @@ mod tests {
             ),
             metrics: Arc::new(Metrics::default()),
             limiter,
+            failed_auth: Arc::new(RateLimiter::keyed(Quota::per_second(
+                NonZeroU32::new(FAILED_AUTH_PER_SECOND).unwrap_or(NonZeroU32::MIN),
+            ))),
             gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             request_seq: Arc::new(AtomicU64::new(0)),
             ready: true,
             ready_message: Arc::from("ready"),
             allowed_hosts: Arc::new(vec!["localhost".to_owned()]),
+            request_deadline: Duration::from_secs(30),
         }
     }
 
     fn app(state: HttpState) -> Router {
         Router::new()
             .route("/probe", get(|| async { "ok" }))
+            .route("/readyz", get(|| async { "ready" }))
+            .layer(middleware::from_fn_with_state(
+                state.clone(),
+                limit_requests,
+            ))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 require_bearer,
@@ -572,10 +698,13 @@ mod tests {
                 state.clone(),
                 assign_request_id,
             ))
-            .layer(middleware::from_fn_with_state(
-                state.clone(),
-                limit_requests,
-            ))
+            .with_state(state)
+    }
+
+    fn host_app(state: HttpState) -> Router {
+        Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state.clone(), require_host))
             .with_state(state)
     }
 
@@ -585,6 +714,11 @@ mod tests {
             .header(axum::http::header::HOST, "localhost")
             .body(Body::empty())
             .expect("request")
+    }
+
+    fn peer(mut request: HttpRequest<Body>, address: SocketAddr) -> HttpRequest<Body> {
+        request.extensions_mut().insert(ConnectInfo(address));
+        request
     }
 
     #[tokio::test]
@@ -654,26 +788,113 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_limiter_runs_before_the_bearer_gate() {
+    async fn an_unauthenticated_caller_does_not_spend_the_global_rate_limit() {
         let router = app(state(&["secret"], Some(1)));
         let first = router.clone().oneshot(probe()).await.expect("response");
         assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
-        let second = router.oneshot(probe()).await.expect("response");
+        let second = router.clone().oneshot(probe()).await.expect("response");
         assert_eq!(
             second.status(),
-            StatusCode::TOO_MANY_REQUESTS,
-            "an unauthenticated caller must spend the same rate limit"
+            StatusCode::UNAUTHORIZED,
+            "a failed token must not spend the token holder's rate limit"
         );
+        let authorized = HttpRequest::builder()
+            .uri("/probe")
+            .header(axum::http::header::HOST, "localhost")
+            .header(AUTHORIZATION, "Bearer secret")
+            .body(Body::empty())
+            .expect("request");
+        let allowed = router.clone().oneshot(authorized).await.expect("response");
+        assert_eq!(allowed.status(), StatusCode::OK);
+        let limited = HttpRequest::builder()
+            .uri("/probe")
+            .header(axum::http::header::HOST, "localhost")
+            .header(AUTHORIZATION, "Bearer secret")
+            .body(Body::empty())
+            .expect("request");
+        let refused = router.oneshot(limited).await.expect("response");
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn the_readiness_probe_is_not_rate_limited() {
+        let router = app(state(&[], Some(1)));
+        for _ in 0..3 {
+            let request = HttpRequest::builder()
+                .uri("/readyz")
+                .header(axum::http::header::HOST, "localhost")
+                .body(Body::empty())
+                .expect("request");
+            let response = router.clone().oneshot(request).await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+        let first = router.clone().oneshot(probe()).await.expect("response");
+        assert_eq!(first.status(), StatusCode::OK);
+        let second = router.oneshot(probe()).await.expect("response");
+        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
+    async fn failed_tokens_are_limited_per_peer() {
+        let router = app(state(&["secret"], None));
+        let one = SocketAddr::from(([127, 0, 0, 1], 4000));
+        let other = SocketAddr::from(([127, 0, 0, 2], 4000));
+        for _ in 0..FAILED_AUTH_PER_SECOND {
+            let response = router
+                .clone()
+                .oneshot(peer(probe(), one))
+                .await
+                .expect("response");
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+        }
+        let refused = router
+            .clone()
+            .oneshot(peer(probe(), one))
+            .await
+            .expect("response");
+        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
+        let allowed_other_peer = router
+            .oneshot(peer(probe(), other))
+            .await
+            .expect("response");
+        assert_eq!(allowed_other_peer.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn the_bearer_scheme_is_case_insensitive() {
+        let router = app(state(&["secret"], None));
+        for scheme in ["bearer", "BEARER", "BeArEr"] {
+            let request = HttpRequest::builder()
+                .uri("/probe")
+                .header(axum::http::header::HOST, "localhost")
+                .header(AUTHORIZATION, format!("{scheme} secret"))
+                .body(Body::empty())
+                .expect("request");
+            let response = router.clone().oneshot(request).await.expect("response");
+            assert_eq!(response.status(), StatusCode::OK, "scheme {scheme}");
+        }
+    }
+
+    #[tokio::test]
+    async fn an_origin_header_is_rejected() {
+        let router = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(middleware::from_fn(reject_origin));
+        let request = HttpRequest::builder()
+            .uri("/probe")
+            .header(axum::http::header::HOST, "localhost")
+            .header(axum::http::header::ORIGIN, "https://example.org")
+            .body(Body::empty())
+            .expect("request");
+        let response = router.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
     async fn an_http2_style_authority_counts_as_the_host() {
         let mut state = state(&[], None);
         state.allowed_hosts = Arc::new(vec!["localhost".to_owned()]);
-        let router = Router::new()
-            .route("/probe", get(|| async { "ok" }))
-            .layer(middleware::from_fn_with_state(state.clone(), require_host))
-            .with_state(state);
+        let router = host_app(state);
         let request = HttpRequest::builder()
             .uri("http://localhost/probe")
             .body(Body::empty())
@@ -699,13 +920,65 @@ mod tests {
     }
 
     #[test]
-    fn the_host_split_keeps_ipv6_and_drops_only_a_real_port() {
-        assert_eq!(host_without_port("127.0.0.1:8777"), "127.0.0.1");
-        assert_eq!(host_without_port("example.org:443"), "example.org");
-        assert_eq!(host_without_port("::1"), "::1");
-        assert_eq!(host_without_port("[::1]:8777"), "::1");
-        assert_eq!(host_without_port(":443"), ":443");
-        assert_eq!(host_without_port("example.org"), "example.org");
+    fn a_host_entry_with_a_port_must_match_the_port() {
+        let allowed = parse_host("example.com:443").expect("allowed");
+        assert!(host_matches(
+            &parse_host("example.com:443").expect("host"),
+            &allowed
+        ));
+        assert!(!host_matches(
+            &parse_host("example.com:8080").expect("host"),
+            &allowed
+        ));
+    }
+
+    #[test]
+    fn host_matching_ignores_case_and_one_trailing_dot() {
+        let allowed = parse_host("example.com").expect("allowed");
+        assert!(host_matches(
+            &parse_host("Example.COM.").expect("host"),
+            &allowed
+        ));
+    }
+
+    #[test]
+    fn the_host_parser_keeps_ipv6_and_rejects_a_bare_colon() {
+        assert_eq!(
+            parse_host("[::1]:8777").expect("ipv6").host,
+            "::1".to_owned()
+        );
+        assert_eq!(parse_host("127.0.0.1:8777").expect("ipv4").port, Some(8777));
+        assert!(parse_host("::1").is_none());
+        assert!(parse_host(":443").is_none());
+        assert!(parse_host("has space").is_none());
+    }
+
+    #[tokio::test]
+    async fn a_host_entry_with_a_port_rejects_another_port() {
+        let mut state = state(&[], None);
+        state.allowed_hosts = Arc::new(vec!["example.com:443".to_owned()]);
+        let router = host_app(state);
+        let request = HttpRequest::builder()
+            .uri("/probe")
+            .header(axum::http::header::HOST, "example.com:8080")
+            .body(Body::empty())
+            .expect("request");
+        let response = router.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn an_invalid_host_header_is_rejected_instead_of_using_the_uri() {
+        let mut state = state(&[], None);
+        state.allowed_hosts = Arc::new(vec!["localhost".to_owned()]);
+        let router = host_app(state);
+        let request = HttpRequest::builder()
+            .uri("http://localhost/probe")
+            .header(axum::http::header::HOST, "bad host")
+            .body(Body::empty())
+            .expect("request");
+        let response = router.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]
@@ -713,17 +986,66 @@ mod tests {
         let hosts = allowed_hosts("127.0.0.1:8777", None);
         assert!(hosts.iter().any(|host| host == "localhost"));
         assert!(hosts.iter().any(|host| host == "127.0.0.1"));
-        assert!(hosts.iter().any(|host| host == "::1"));
+        assert!(hosts.iter().any(|host| host == "[::1]"));
+    }
+
+    #[test]
+    fn an_ipv6_bind_formats_its_entries_with_brackets() {
+        let hosts = allowed_hosts("[::1]:8777", None);
+        assert!(hosts.iter().any(|host| host == "[::1]:443"));
+        assert!(!hosts.iter().any(|host| host == "::1:443"));
+    }
+
+    #[test]
+    fn an_unspecified_bind_is_recognized() {
+        assert!(unspecified_bind("0.0.0.0:8777"));
+        assert!(unspecified_bind("[::]:8777"));
+        assert!(!unspecified_bind("127.0.0.1:8777"));
+        assert!(!unspecified_bind("localhost:8777"));
+    }
+
+    #[test]
+    fn a_non_ascii_bearer_token_is_refused_at_startup() {
+        let token = secrecy::SecretString::from("é".repeat(MIN_TOKEN_CHARS));
+        let error = validate_tokens(&[token]).expect_err("must fail");
+        assert!(error.to_string().contains("0x21"));
+    }
+
+    #[test]
+    fn a_short_bearer_token_is_refused_at_startup() {
+        let token = secrecy::SecretString::from("short");
+        let error = validate_tokens(&[token]).expect_err("must fail");
+        assert!(error.to_string().contains("shorter than"));
+    }
+
+    #[test]
+    fn the_deadline_follows_the_configured_timeout_and_the_retries() {
+        assert_eq!(
+            call_deadline(10, 1),
+            Duration::from_millis(10 * 3 * 1000 + CLIENT_BACKOFF_TOTAL_MS + 3 * 1000)
+        );
+    }
+
+    #[test]
+    fn a_slow_request_timeout_is_not_cut_at_the_old_120_second_deadline() {
+        assert!(call_deadline(300, 10) > Duration::from_secs(120));
+    }
+
+    #[test]
+    fn a_transport_failure_is_an_io_error_not_a_config_error() {
+        let error = http_result(Ok(Err(std::io::Error::new(
+            std::io::ErrorKind::AddrInUse,
+            "address already in use",
+        ))))
+        .expect_err("must fail");
+        assert_eq!(error.code(), "serper.internal_error");
     }
 
     #[tokio::test]
     async fn a_bare_colon_host_does_not_pass_the_ipv6_allowlist() {
         let mut state = state(&[], None);
         state.allowed_hosts = Arc::new(vec!["::1".to_owned()]);
-        let router = Router::new()
-            .route("/probe", get(|| async { "ok" }))
-            .layer(middleware::from_fn_with_state(state.clone(), require_host))
-            .with_state(state);
+        let router = host_app(state);
         let request = HttpRequest::builder()
             .uri("/probe")
             .header(axum::http::header::HOST, ":443")

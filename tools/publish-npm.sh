@@ -5,7 +5,7 @@ REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO"
 source "$REPO/tools/lib.sh"
 require_bash 4.4
-require_tool npm "install Node.js 18 or newer"
+require_tool npm "install Node.js 22 or newer"
 require_tool jq "run: brew install jq"
 
 PACKAGE_DIR="$REPO/target/distrib/ownserp-npm-package"
@@ -16,6 +16,11 @@ usage() {
 Usage: tools/publish-npm.sh [--dry-run]
 
 Publish the npm package that cargo-dist generated in target/distrib.
+
+The script adds the mcpName field to the generated package.json before
+publishing, so the published package is not byte-identical to the
+ownserp-npm-package.tar.gz listed in the signed sha256.sum. The version and
+the files are the same.
 
   --dry-run  pack and print the file list, publish nothing
   -h, --help show this

@@ -38,7 +38,7 @@ Control: query text is never written, and the stored arguments hash is an HMAC k
 
 ### Credit burn
 
-Control: every tool description states its cost, every result carries a cost object, a per-call credit ceiling and a session budget refuse before spending, and the reservation covers the worst known price (10 credits for scrape, the per-query sum times three for batch). A spending tool reports `idempotent: false`, because a repeat without the cache spends again. The client holds a QPS ceiling, and the optional cache answers repeats for free. Residual risk: a loop that stays under both limits still spends. The ledger makes the spend visible while it happens.
+Control: every tool description states its cost, every result carries a cost object, and a per-call credit ceiling and a session budget refuse before spending. Both limits are off until they are set, by a profile key or by `OWN_SERPER_PER_CALL_CREDIT_CEILING` and `OWN_SERPER_SESSION_BUDGET_CREDITS`. The reservation covers the worst known price (10 credits for scrape, the per-query sum times three for batch). A spending tool reports `idempotent: false`, because a repeat without the cache spends again. The client holds a QPS ceiling, and the optional cache answers repeats for free. Residual risk: with no limits set, nothing is refused before spending. A loop that stays under both limits still spends. The reservation is held per process and dropped before the call runs, so two processes can both pass the budget check; when a per-call ceiling is set, the budget can be passed by at most the number of running processes times that ceiling, and with no ceiling it is the process count times the largest single reservation, which is 900 credits for a 100-query maps or lens batch. The ledger makes the spend visible while it happens.
 
 ### Unauthorized HTTP clients
 
@@ -70,7 +70,7 @@ Control: the sanitizer drops zero-width, bidi, variation-selector, tag-block, an
 
 ### Supply chain
 
-Control: committed lockfile, `--locked` on every gate, `cargo audit` with three reasoned suppressions, `deny.toml` with a license allowlist and banned crates, no unsafe code, and no build scripts in this workspace. Residual risk: the suppressed `zvariant` and `zbus_names` notices, reviewed on 2027-01-31.
+Control: committed lockfile, `--locked` on every gate, `cargo audit` with three reasoned suppressions, `deny.toml` with a license allowlist and banned crates, no unsafe code, and no build scripts in this workspace. Residual risk: the suppressed `zvariant`, `zbus_names`, and `zvariant_derive` notices, all reached only through the Secret Service keychain store and all unmaintained rather than vulnerable. The fix is zbus 6, into which zvariant was merged, but zbus-secret-service-keyring-store 1.0.1 still requires zbus 5, so the three notices stay until that store supports zbus 6. Reviewed on 2027-01-31.
 
 ### Error leakage
 

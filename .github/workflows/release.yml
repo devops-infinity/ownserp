@@ -13,7 +13,7 @@ on:
 
 concurrency:
   group: release-${{ inputs.tag || github.ref_name }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -50,6 +50,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install the Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
@@ -104,6 +105,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
 
       - name: Install dist
         uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
@@ -118,15 +120,18 @@ jobs:
           merge-multiple: true
 
       - name: Build the installers
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $TAG is not vX.Y.Z"; exit 1; }
           dist build --tag="$TAG" --artifacts=global --no-local-paths
           mkdir -p dist
           find target/distrib -maxdepth 1 -type f -exec cp -p {} dist/ \;
 
       - name: Build the MCPB bundle
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
           VERSION="${TAG#v}"
           TMP="$RUNNER_TEMP/mcpb"
           rm -rf "$TMP"
@@ -138,13 +143,14 @@ jobs:
           (cd "$TMP" && zip -qXr "$GITHUB_WORKSPACE/dist/ownserp-$VERSION.mcpb" manifest.json server)
           HASH="$(sha256sum "dist/ownserp-$VERSION.mcpb" | awk '{print $1}')"
           printf '%s  %s\n' "$HASH" "ownserp-$VERSION.mcpb" > "dist/ownserp-$VERSION.mcpb.sha256"
+          printf '%s  %s\n' "$HASH" "ownserp-$VERSION.mcpb" >> "dist/sha256.sum"
 
       - name: Sign the checksums
         env:
           MINISIGN_KEY: ${{ secrets.MINISIGN_KEY }}
         run: |
           if [ -z "$MINISIGN_KEY" ]; then
-            echo "MINISIGN_KEY is not set; sha256.sum stays unsigned"
+            echo "::warning::MINISIGN_KEY is not set; sha256.sum stays unsigned"
             exit 0
           fi
           sudo apt-get update
@@ -156,13 +162,17 @@ jobs:
           cp minisign.pub dist/minisign.pub
 
       - name: Create or update the release
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          TAG="${{ inputs.tag || github.ref_name }}"
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::tag $TAG is not vX.Y.Z"; exit 1; }
           VERSION="${TAG#v}"
           NOTES="$RUNNER_TEMP/notes.md"
           sed -n "/^## \[$VERSION\]/,/^## \[/p" CHANGELOG.md | sed '$d' > "$NOTES"
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
           else
-            gh release create "$TAG" dist/* --title "OwnSERP $VERSION" --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
+            gh release create "$TAG" --draft --title "OwnSERP $VERSION" --notes-file "$NOTES" --repo "$GITHUB_REPOSITORY"
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY"
           fi
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"
