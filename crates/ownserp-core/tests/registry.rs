@@ -83,6 +83,29 @@ fn catalog_is_prefixed_bounded_and_fully_typed() {
 }
 
 #[test]
+fn the_server_info_declares_tools_and_both_protocol_versions() {
+    use rmcp::ServerHandler;
+
+    let handler = OwnserpHandler::new(common::settings("info")).expect("handler");
+    let info = handler.get_info();
+    assert!(info.capabilities.tools.is_some());
+    assert!(info.instructions.is_some());
+    assert_eq!(info.server_info.name, "ownserp");
+    let versions = handler.supported_protocol_versions();
+    assert_eq!(versions.len(), 2);
+    assert!(
+        versions
+            .iter()
+            .any(|version| version.to_string() == "2026-07-28")
+    );
+    assert!(
+        versions
+            .iter()
+            .any(|version| version.to_string() == "2025-11-25")
+    );
+}
+
+#[test]
 fn catalog_fits_the_measured_budget() {
     let handler = OwnserpHandler::new(common::settings("budget")).expect("handler");
     let bytes = serde_json::to_vec(handler.tools()).expect("serialize catalog");

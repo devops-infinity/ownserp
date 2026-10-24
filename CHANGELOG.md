@@ -20,3 +20,9 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - Structured errors with stable `serper.*` codes and a remedy line.
 - Binary CLI with `serve`, `doctor`, `config`, and `audit` commands.
 - Registry manifest, bundle manifest, and Dockerfile.
+- Local lifecycle tooling: a verification gate, an installer, a release script, and repository hooks. No hosted pipeline.
+- An exclusive ledger lock, owner-only ledger permissions, a per-line size cap, and a keyed arguments hash.
+- Unknown and disabled tool calls are refused, and credits are reserved at the worst known price before a call.
+- Retries pass through the local rate limiter, and upstream error text is sanitized and capped.
+- Security headers on every response, host validation on every protected route, and a 32-character minimum bearer token.
+- An 80 percent line coverage floor enforced by the gate.

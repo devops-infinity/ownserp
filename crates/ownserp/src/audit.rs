@@ -105,6 +105,14 @@ mod tests {
     }
 
     #[test]
+    fn a_file_under_the_data_directory_counts_as_the_default() {
+        assert!(file_is_default(
+            &ownserp_core::default_data_dir().join("ledger/calls.jsonl")
+        ));
+        assert!(!file_is_default(std::path::Path::new("/tmp/calls.jsonl")));
+    }
+
+    #[test]
     fn rotating_a_missing_ledger_reports_an_error() {
         let path = temp_dir("missing").join("calls.jsonl");
         let outcome = run(AuditArgs {

@@ -32,7 +32,7 @@ run_check() {
 	say SUCCESS "$STEP"
 }
 
-SHELL_FILES=(tools/*.sh)
+SHELL_FILES=(tools/*.sh .githooks/pre-commit .githooks/pre-push)
 bash -n "${SHELL_FILES[@]}" || die "a shell script has a syntax error"
 say SUCCESS "shell syntax"
 
@@ -58,6 +58,11 @@ run_check "docs" "the docs do not build" env RUSTDOCFLAGS="-D warnings" cargo do
 run_check "advisories" "a dependency advisory is open; see deny.toml" cargo audit --deny warnings --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
 run_check "policy" "cargo deny failed" cargo deny check
 run_check "unused dependencies" "remove the dependency machete reports" cargo machete
+if command -v cargo-llvm-cov >/dev/null 2>&1; then
+	run_check "coverage" "line coverage is below the 80 percent floor; add a test for the changed code" cargo llvm-cov --workspace --all-features --fail-under-lines 80 --summary-only
+else
+	warn "cargo-llvm-cov is not installed, so the coverage floor was skipped"
+fi
 if command -v gitleaks >/dev/null 2>&1; then
 	run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1
 else

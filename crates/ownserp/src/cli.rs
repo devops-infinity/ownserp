@@ -148,6 +148,18 @@ mod tests {
     }
 
     #[test]
+    fn doctor_flags_become_overrides() {
+        let args = DoctorArgs {
+            profile: Some(PathBuf::from("/tmp/profile.toml")),
+            ledger_dir: Some(PathBuf::from("/tmp/ledger")),
+        };
+        let overrides = args.into_overrides();
+        assert_eq!(overrides.profile, Some(PathBuf::from("/tmp/profile.toml")));
+        assert_eq!(overrides.ledger_dir, Some(PathBuf::from("/tmp/ledger")));
+        assert_eq!(overrides.http, None);
+    }
+
+    #[test]
     fn serve_flags_become_overrides_only_when_set() {
         let args = ServeArgs {
             http: false,

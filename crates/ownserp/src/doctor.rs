@@ -62,3 +62,38 @@ fn usd_rate(settings: &Settings) -> String {
         None => "set SERPER_USD_PER_1K".to_owned(),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use ownserp_core::Overrides;
+
+    use super::*;
+
+    fn settings(pairs: &[(&str, &str)]) -> Settings {
+        let map: BTreeMap<String, String> = pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        Settings::load_with(
+            Overrides {
+                profile: Some(std::env::temp_dir().join("ownserp-doctor-test.toml")),
+                ledger_dir: Some(std::env::temp_dir().join("ownserp-doctor-test")),
+                cache_ttl_secs: Some(0),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("settings")
+    }
+
+    #[test]
+    fn the_rate_comes_from_the_pack_or_the_override() {
+        assert_eq!(usd_rate(&settings(&[])), "$1.00");
+        assert_eq!(
+            usd_rate(&settings(&[("SERPER_USD_PER_1K", "0.42")])),
+            "$0.42"
+        );
+    }
+}

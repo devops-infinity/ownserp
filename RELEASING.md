@@ -8,6 +8,7 @@ Everything runs on this machine. There is no GitHub Actions workflow, no hosted 
 - The gate tools: `cargo install --locked cargo-audit cargo-deny cargo-machete`, plus `shellcheck`, `shfmt`, `gitleaks`, and `jq` from Homebrew.
 - `gh auth login` with push access to `devops-infinity/ownserp`.
 - Optional: a signing key in `git config user.signingkey`, so `--tag` creates a signed tag instead of an annotated one.
+- Local hooks, once per checkout: `tools/install-hooks.sh`. The pre-commit hook scans staged content for secrets, and the pre-push hook runs `tools/verify.sh`.
 
 ## Cut a release
 

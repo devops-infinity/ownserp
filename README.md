@@ -161,10 +161,10 @@ cargo test --workspace --all-features --locked --doc
 RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 cargo machete
 cargo deny check
-cargo llvm-cov --workspace --all-features --summary-only
+cargo llvm-cov --workspace --all-features --fail-under-lines 80 --summary-only
 ```
 
-Line coverage measured on 2026-10-24 is 75.4 percent. The blueprint calls for 80 percent, and this does not reach it yet. The uncovered code is the CLI command bodies, which talk to the terminal and the network, and the stdio transport loop. No coverage gate is enforced until the figure reaches the floor, so the number cannot silently fall.
+Line coverage measured on 2026-10-24 is 80.2 percent, and `tools/verify.sh` fails the gate below 80 percent line coverage through `cargo llvm-cov --fail-under-lines 80`, so the figure cannot silently fall.
 
 The tests use recorded payloads and a local mock server. No test calls Serper, so the suite needs no key and spends no credits.
 
@@ -184,6 +184,7 @@ Those three flags are unmaintained notices on `zvariant`, `zbus_names`, and `zva
 - `tools/verify.sh` runs the whole gate: formatting, check, clippy, tests, docs, advisories, policy, unused dependencies, and a secret scan.
 - `tools/reinstall.sh` builds and installs the binary into `~/.local/bin`.
 - `tools/release.sh --prepare` bumps the version, and `--package` builds the archive and checksum.
+- `tools/install-hooks.sh` points git at the local hooks: a secret scan before each commit and the full gate before each push.
 - `RELEASING.md` is the runbook for cutting a release.
 
 There is no GitHub workflow and no hosted pipeline. Every check and every release step runs on this machine.

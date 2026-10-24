@@ -36,15 +36,56 @@ fn set_key() -> anyhow::Result<()> {
 
 fn show() -> anyhow::Result<()> {
     let settings = Settings::load(Overrides::default()).context("resolving settings")?;
-    println!("api key source: {}", settings.api_key_source().label());
-    println!("api key: {}", settings.masked_key());
-    println!("pack tier: {:?}", settings.pack());
-    println!("ledger directory: {}", settings.ledger_dir().display());
-    println!(
-        "profile: {}",
-        settings
-            .profile_path()
-            .map_or_else(|| "none".to_owned(), |path| path.display().to_string())
-    );
+    for line in summary(&settings) {
+        println!("{line}");
+    }
     Ok(())
+}
+
+fn summary(settings: &Settings) -> Vec<String> {
+    vec![
+        format!("api key source: {}", settings.api_key_source().label()),
+        format!("api key: {}", settings.masked_key()),
+        format!("pack tier: {:?}", settings.pack()),
+        format!("ledger directory: {}", settings.ledger_dir().display()),
+        format!(
+            "profile: {}",
+            settings
+                .profile_path()
+                .map_or_else(|| "none".to_owned(), |path| path.display().to_string())
+        ),
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn settings_with_key() -> Settings {
+        let map = BTreeMap::from([("SERPER_API_KEY".to_owned(), "abcdefgh-test-key".to_owned())]);
+        Settings::load_with(
+            Overrides {
+                profile: Some(std::env::temp_dir().join("ownserp-config-summary.toml")),
+                ledger_dir: Some(std::env::temp_dir().join("ownserp-config-summary-ledger")),
+                cache_ttl_secs: Some(0),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("settings")
+    }
+
+    #[test]
+    fn the_summary_masks_the_key_and_names_every_field() {
+        let lines = summary(&settings_with_key());
+        assert_eq!(lines.len(), 5);
+        let joined = lines.join("\n");
+        assert!(joined.contains("api key source: environment"));
+        assert!(joined.contains("api key: ****-key"));
+        assert!(!joined.contains("abcdefgh-test-key"));
+        assert!(joined.contains("pack tier: Starter"));
+        assert!(joined.contains("ledger directory:"));
+    }
 }

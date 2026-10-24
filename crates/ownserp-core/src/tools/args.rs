@@ -497,6 +497,29 @@ mod tests {
     }
 
     #[test]
+    fn location_queries_carry_the_limit_within_bounds() {
+        let ok: LocationsArgs =
+            serde_json::from_value(serde_json::json!({"q": "dhaka", "limit": 5})).expect("parse");
+        let query = ok.query().expect("query");
+        assert_eq!(query.len(), 2);
+        assert_eq!(query[1].0, "limit");
+        assert_eq!(query[1].1, "5");
+
+        let too_many: LocationsArgs =
+            serde_json::from_value(serde_json::json!({"q": "dhaka", "limit": 101})).expect("parse");
+        assert!(too_many.query().is_err());
+    }
+
+    #[test]
+    fn the_session_tool_parses_the_live_flag() {
+        let live: SessionArgs =
+            serde_json::from_value(serde_json::json!({"live": true})).expect("parse");
+        assert_eq!(live.live, Some(true));
+        let default: SessionArgs = serde_json::from_value(serde_json::json!({})).expect("parse");
+        assert_eq!(default.live, None);
+    }
+
+    #[test]
     fn long_urls_are_refused() {
         let long = format!("https://example.org/{}", "a".repeat(3000));
         let args: LensArgs =

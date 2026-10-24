@@ -63,17 +63,23 @@ struct Profile {
 
 impl Settings {
     pub fn load(overrides: Overrides) -> Result<Self> {
+        Self::load_with(overrides, |name| std::env::var(name).ok())
+    }
+
+    pub fn load_with<F>(overrides: Overrides, env: F) -> Result<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+    {
         let profile_path = overrides
             .profile
             .clone()
-            .or_else(|| std::env::var_os("OWN_SERPER_PROFILE").map(PathBuf::from))
+            .or_else(|| env("OWN_SERPER_PROFILE").map(PathBuf::from))
             .or_else(|| Some(default_config_dir().join("profile.toml")));
         let profile = match profile_path.as_deref() {
             Some(path) if path.exists() => read_profile(path)?,
             _ => Profile::default(),
         };
-        let api_key = std::env::var("SERPER_API_KEY")
-            .ok()
+        let api_key = env("SERPER_API_KEY")
             .filter(|value| !value.trim().is_empty())
             .map(SecretString::from);
         let (api_key, api_key_source, api_key_error) = match api_key {
@@ -84,18 +90,17 @@ impl Settings {
                 Err(error) => (None, ApiKeySource::Missing, Some(error.to_string())),
             },
         };
-        let qps_env = env_parse::<u32>("OWN_SERPER_QPS")?;
-        let cache_ttl_env = env_parse::<u64>("OWN_SERPER_CACHE_TTL_SECS")?;
-        let usd_env = env_parse::<f64>("SERPER_USD_PER_1K")?;
-        let http_qps_env = env_parse::<u32>("OWN_SERPER_HTTP_QPS")?;
+        let qps_env = env_parse::<u32>(&env, "OWN_SERPER_QPS")?;
+        let cache_ttl_env = env_parse::<u64>(&env, "OWN_SERPER_CACHE_TTL_SECS")?;
+        let usd_env = env_parse::<f64>(&env, "SERPER_USD_PER_1K")?;
+        let http_qps_env = env_parse::<u32>(&env, "OWN_SERPER_HTTP_QPS")?;
         let qps_raw = overrides
             .qps
             .or(qps_env)
             .or(profile.qps)
             .unwrap_or_else(|| overrides.pack.or(profile.pack).unwrap_or_default().qps());
         let pack = overrides.pack.or(profile.pack).unwrap_or_default();
-        let bearer_tokens = std::env::var("OWN_SERPER_BEARER_TOKENS")
-            .ok()
+        let bearer_tokens = env("OWN_SERPER_BEARER_TOKENS")
             .map(|raw| {
                 raw.split(',')
                     .map(str::trim)
@@ -111,7 +116,7 @@ impl Settings {
             http: overrides.http.or(profile.http).unwrap_or(false),
             bind: overrides
                 .bind
-                .or_else(|| std::env::var("OWN_SERPER_BIND").ok())
+                .or_else(|| env("OWN_SERPER_BIND"))
                 .or(profile.bind)
                 .unwrap_or_else(|| "127.0.0.1:8777".to_owned()),
             bearer_tokens,
@@ -126,7 +131,7 @@ impl Settings {
             cache_max_bytes: profile.cache_max_bytes.unwrap_or(16 * 1024 * 1024),
             ledger_dir: overrides
                 .ledger_dir
-                .or_else(|| std::env::var_os("OWN_SERPER_LEDGER_DIR").map(PathBuf::from))
+                .or_else(|| env("OWN_SERPER_LEDGER_DIR").map(PathBuf::from))
                 .or(profile.ledger_dir)
                 .unwrap_or_else(|| default_data_dir().join("ledger")),
             per_call_credit_ceiling: profile.per_call_credit_ceiling,
@@ -237,8 +242,11 @@ pub fn mask(secret: &str) -> String {
     format!("****{tail}")
 }
 
-fn env_parse<T: std::str::FromStr>(name: &str) -> Result<Option<T>> {
-    let Ok(raw) = std::env::var(name) else {
+fn env_parse<T: std::str::FromStr>(
+    env: &impl Fn(&str) -> Option<String>,
+    name: &str,
+) -> Result<Option<T>> {
+    let Some(raw) = env(name) else {
         return Ok(None);
     };
     let trimmed = raw.trim();
@@ -331,5 +339,175 @@ impl std::fmt::Debug for Settings {
             .field("http_qps", &self.http_qps)
             .field("profile_path", &self.profile_path)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::*;
+
+    fn environment(pairs: &[(&str, &str)]) -> BTreeMap<String, String> {
+        pairs
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect()
+    }
+
+    fn profile_file(label: &str, body: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("ownserp-config-{}-{label}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let path = dir.join("profile.toml");
+        std::fs::write(&path, body).expect("profile");
+        path
+    }
+
+    fn load(
+        label: &str,
+        profile: &str,
+        pairs: &[(&str, &str)],
+        overrides: Overrides,
+    ) -> Result<Settings> {
+        let map = environment(pairs);
+        Settings::load_with(
+            Overrides {
+                profile: Some(profile_file(label, profile)),
+                ..overrides
+            },
+            |name| map.get(name).cloned(),
+        )
+    }
+
+    fn base_overrides() -> Overrides {
+        Overrides {
+            ledger_dir: Some(std::env::temp_dir().join("ownserp-config-ledger")),
+            cache_ttl_secs: Some(0),
+            ..Overrides::default()
+        }
+    }
+
+    #[test]
+    fn the_environment_beats_the_profile_for_bind() {
+        let settings = load(
+            "bind",
+            "bind = \"127.0.0.1:1111\"\n",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_BIND", "127.0.0.1:2222"),
+            ],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(settings.bind(), "127.0.0.1:2222");
+    }
+
+    #[test]
+    fn an_override_beats_the_environment() {
+        let overrides = Overrides {
+            qps: Some(7),
+            ..base_overrides()
+        };
+        let settings = load(
+            "qps",
+            "",
+            &[("SERPER_API_KEY", "test-key"), ("OWN_SERPER_QPS", "5")],
+            overrides,
+        )
+        .expect("settings");
+        assert_eq!(settings.qps().get().get(), 7);
+    }
+
+    #[test]
+    fn an_unparseable_environment_value_is_an_error() {
+        let error = load(
+            "badqps",
+            "",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_HTTP_QPS", "fast"),
+            ],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("OWN_SERPER_HTTP_QPS"));
+    }
+
+    #[test]
+    fn an_absent_variable_falls_back_to_the_profile() {
+        let settings = load(
+            "ttl",
+            "cache_ttl_secs = 30\n",
+            &[("SERPER_API_KEY", "test-key")],
+            Overrides {
+                cache_ttl_secs: None,
+                ..base_overrides()
+            },
+        )
+        .expect("settings");
+        assert_eq!(settings.cache_ttl_secs(), 30);
+    }
+
+    #[test]
+    fn the_usd_override_reads_from_the_environment() {
+        let settings = load(
+            "usd",
+            "",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("SERPER_USD_PER_1K", "0.42"),
+            ],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(settings.usd_per_1k(), Some(0.42));
+    }
+
+    #[test]
+    fn bearer_tokens_are_split_and_trimmed() {
+        let settings = load(
+            "tokens",
+            "",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_BEARER_TOKENS", " one , two ,, "),
+            ],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(settings.bearer_tokens().len(), 2);
+    }
+
+    #[test]
+    fn a_profile_with_an_unknown_key_is_rejected() {
+        let error = load(
+            "unknown",
+            "bogus = 1\n",
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("profile"));
+    }
+
+    #[test]
+    fn the_debug_output_never_carries_the_key() {
+        let settings = load(
+            "debug",
+            "",
+            &[("SERPER_API_KEY", "super-secret-value")],
+            base_overrides(),
+        )
+        .expect("settings");
+        let rendered = format!("{settings:?}");
+        assert!(!rendered.contains("super-secret-value"));
+        assert!(rendered.contains("<set>"));
+    }
+
+    #[test]
+    fn masking_keeps_only_the_tail() {
+        assert_eq!(mask("abcdefgh"), "****efgh");
+        assert_eq!(mask("abc"), "****");
     }
 }

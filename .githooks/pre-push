@@ -1,0 +1,9 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$REPO/tools/lib.sh"
+require_bash 4.4
+
+say INFO "running the gate before push"
+exec "$REPO/tools/verify.sh"

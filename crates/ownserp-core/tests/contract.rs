@@ -907,3 +907,39 @@ async fn an_upstream_error_message_is_sanitized_and_capped() {
         message.chars().count()
     );
 }
+
+#[tokio::test]
+async fn the_health_and_balance_probes_read_their_own_paths() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"status": "ok"})))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/account"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({"credits": 1234})))
+        .mount(&server)
+        .await;
+    let ctx = context("probes", &server.uri(), 0);
+    assert!(ctx.client.health().await.is_some());
+    assert_eq!(ctx.client.live_balance().await, Some(1234));
+}
+
+#[tokio::test]
+async fn a_failed_probe_reports_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(503))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/account"))
+        .respond_with(ResponseTemplate::new(401))
+        .mount(&server)
+        .await;
+    let ctx = context("probesfail", &server.uri(), 0);
+    assert!(ctx.client.health().await.is_none());
+    assert!(ctx.client.live_balance().await.is_none());
+}
