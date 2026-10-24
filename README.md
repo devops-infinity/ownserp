@@ -155,11 +155,7 @@ The npm package covers Linux x86_64. On macOS and Windows, build from source and
 
 ### OpenAI Codex CLI
 
-```sh
-codex mcp add ownserp --env SERPER_API_KEY="$SERPER_API_KEY" -- ownserp serve
-```
-
-Or in `~/.codex/config.toml`, or a project `.codex/config.toml`:
+In `~/.codex/config.toml`, or a project `.codex/config.toml`:
 
 ```toml
 [mcp_servers.ownserp]
@@ -167,6 +163,8 @@ command = "ownserp"
 args = ["serve"]
 env_vars = ["SERPER_API_KEY"]
 ```
+
+`env_vars` passes the variable from the environment, so the key never enters a command line.
 
 ### Command Code
 
@@ -363,7 +361,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, rate limits before it checks the token, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
 
 ## Security
 
@@ -394,7 +392,7 @@ cargo install --path crates/ownserp --locked
 tools/verify.sh
 ```
 
-`tools/verify.sh` runs the whole gate locally, with no hosted pipeline: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan.
+`tools/verify.sh` runs the whole gate locally, with no hosted pipeline: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
 
 The local lifecycle:
 

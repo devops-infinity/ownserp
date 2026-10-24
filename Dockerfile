@@ -1,6 +1,6 @@
 FROM rust:1.99.1-bookworm@sha256:48b7f435b8fc6378ce43b44f15e3a47fd8919b2825f835c39bd4bd3da50af5b8 AS builder
 WORKDIR /src
-COPY .cargo ./.cargo
+COPY .cargo/config.toml ./.cargo/config.toml
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY crates ./crates
 RUN cargo build --profile dist --locked --bin ownserp
@@ -20,6 +20,6 @@ USER ownserp
 ENV OWN_SERPER_BIND=0.0.0.0:8777
 EXPOSE 8777
 HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
-    CMD ["curl", "-fsS", "http://127.0.0.1:8777/healthz"]
+    CMD ["sh", "-c", "curl -fsS \"http://127.0.0.1:${OWN_SERPER_BIND##*:}/healthz\""]
 ENTRYPOINT ["ownserp"]
 CMD ["serve", "--http"]

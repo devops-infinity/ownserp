@@ -43,8 +43,10 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
                    one archive and sha256 file per target, add shell
                    completions, the manual page, and the MCPB bundle, install
                    the host binary into ~/.local/bin (override with
-                   OWN_SERPER_INSTALL_DIR), and stamp the host archive digest
-                   into the npm loader. Commit that stamp before tagging.
+                   OWN_SERPER_INSTALL_DIR), and stamp the
+                   x86_64-unknown-linux-gnu archive digest into the npm
+                   loader, which is the target it downloads. Commit that
+                   stamp before tagging.
                    Needs cargo-zigbuild, zig, and zip.
   --tag            require a clean tree and an archive whose digest the npm
                    loader already pins, then create vX.Y.Z at HEAD (signed
@@ -199,7 +201,7 @@ prepare() {
 }
 
 package() {
-	local host stage extra archive digest loader target binary
+	local host stage extra archive digest loader target binary loader_archive
 	require_clean_tree
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before packaging"
 	host="$(host_target)"
@@ -208,8 +210,8 @@ package() {
 		say INFO "dry run: would run tools/verify.sh, build $host plus the cross targets, and write one archive per target under $DIST_DIR"
 		return 0
 	fi
-	"$REPO/tools/verify.sh"
-	require_tool cargo-zigbuild "run: cargo install cargo-zigbuild"
+	OWN_SERPER_STRICT_GATE=1 "$REPO/tools/verify.sh"
+	require_tool cargo-zigbuild "run: cargo install --locked cargo-zigbuild"
 	require_tool zig "run: brew install zig"
 	mkdir -p "$DIST_DIR"
 	STAGE="$(mktemp -d)"
@@ -260,6 +262,8 @@ package() {
 		say SUCCESS "wrote $archive.sha256"
 	done
 	archive="$DIST_DIR/ownserp-$CURRENT-$host.tar.gz"
+	loader_archive="$DIST_DIR/ownserp-$CURRENT-x86_64-unknown-linux-gnu.tar.gz"
+	[[ -f "$loader_archive" ]] || die "missing $loader_archive; the npm loader downloads that target"
 	stage="$STAGE/smoke"
 	mkdir -p "$stage"
 	tar -xzf "$archive" -C "$stage"
@@ -284,10 +288,11 @@ package() {
 	say SUCCESS "wrote $bundle"
 	say SUCCESS "wrote $bundle.sha256"
 	loader="$REPO/packages/npm/bin/ownserp.js"
-	digest="$(sha256_of "$archive")"
-	if [[ -f "$loader" ]] && ! grep -q "const DIGEST = \"$digest\";" "$loader"; then
+	digest="$(sha256_of "$loader_archive")"
+	if [[ -f "$loader" ]] && ! grep -qF "const DIGEST = \"$digest\";" "$loader"; then
 		sed "s/^const DIGEST = \".*\";/const DIGEST = \"$digest\";/" "$loader" >"$loader.tmp"
 		mv "$loader.tmp" "$loader"
+		grep -qF "const DIGEST = \"$digest\";" "$loader" || die "the npm loader did not take the digest; check its DIGEST line"
 		say INFO "the npm loader now pins $digest; commit it and merge before --tag"
 	else
 		say SUCCESS "the npm loader already pins $digest"
@@ -298,17 +303,16 @@ package() {
 tag_release() {
 	require_clean_tree
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before tagging"
-	local target archive digest loader="$REPO/packages/npm/bin/ownserp.js"
-	target="$(host_target)"
-	archive="$DIST_DIR/ownserp-$CURRENT-$target.tar.gz"
-	[[ -f "$archive" ]] || die "missing $archive; run tools/release.sh --package first"
-	digest="$(sha256_of "$archive")"
-	if [[ -f "$loader" ]] && ! grep -q "const DIGEST = \"$digest\";" "$loader"; then
+	local digest loader="$REPO/packages/npm/bin/ownserp.js"
+	local loader_archive="$DIST_DIR/ownserp-$CURRENT-x86_64-unknown-linux-gnu.tar.gz"
+	[[ -f "$loader_archive" ]] || die "missing $loader_archive; run tools/release.sh --package first"
+	digest="$(sha256_of "$loader_archive")"
+	if [[ -f "$loader" ]] && ! grep -qF "const DIGEST = \"$digest\";" "$loader"; then
 		die "the npm loader does not pin $digest; commit the loader stamp from --package before tagging"
 	fi
 	git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would create v$CURRENT at HEAD with $archive"
+		say INFO "dry run: would create v$CURRENT at HEAD with $loader_archive"
 		return 0
 	fi
 	if [[ -n "$(git config user.signingkey || true)" ]]; then

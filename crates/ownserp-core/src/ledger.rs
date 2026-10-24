@@ -110,6 +110,7 @@ impl Ledger {
                 lock_down_dir(parent)?;
             }
         }
+        ensure_regular_file(&path)?;
         let mut seq = 0;
         let mut last_hash = String::from("genesis");
         let mut totals = Totals::default();
@@ -129,20 +130,6 @@ impl Ledger {
             accumulate(&mut totals, row);
             Ok(())
         })?;
-        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-            if metadata.file_type().is_symlink() {
-                return Err(Error::Ledger(format!(
-                    "{} is a symbolic link; point the ledger at a regular file",
-                    path.display()
-                )));
-            }
-            if !metadata.is_file() {
-                return Err(Error::Ledger(format!(
-                    "{} is not a regular file",
-                    path.display()
-                )));
-            }
-        }
         let mut options = OpenOptions::new();
         options.create(true).read(true).append(true);
         #[cfg(unix)]
@@ -151,13 +138,14 @@ impl Ledger {
             options.mode(0o600);
         }
         let file = options.open(&path)?;
+        ensure_same_file(&path, &file)?;
         file.try_lock().map_err(|error| {
             Error::Ledger(format!(
-                "another ownserp process holds {}: {error}",
+                "another ownserp process holds {}; stop it, or give this client its own OWN_SERPER_LEDGER_DIR: {error}",
                 path.display()
             ))
         })?;
-        lock_down_file(&path)?;
+        lock_down_file(&path, &file)?;
         sync_parent_dir(&path);
         let stored = file.metadata()?.len();
         if stored > valid_len {
@@ -290,6 +278,7 @@ impl Ledger {
 }
 
 pub fn verify(path: &Path) -> Result<u64> {
+    ensure_regular_file(path)?;
     let mut count = 0u64;
     let mut previous = String::from("genesis");
     let _ = walk_rows(path, |row| {
@@ -322,6 +311,7 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
     }
     let rows = verify(path)?;
     let lock_file = OpenOptions::new().append(true).open(path)?;
+    ensure_same_file(path, &lock_file)?;
     lock_file.try_lock().map_err(|error| {
         Error::Ledger(format!(
             "stop the running server before rotating {}: {error}",
@@ -446,6 +436,62 @@ fn sync_parent_dir(path: &Path) {
     let _ = path;
 }
 
+fn ensure_regular_file(path: &Path) -> Result<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata.file_type().is_symlink() {
+                return Err(Error::Ledger(format!(
+                    "{} is a symbolic link; point the ledger at a regular file",
+                    path.display()
+                )));
+            }
+            if !metadata.is_file() {
+                return Err(Error::Ledger(format!(
+                    "{} is not a regular file",
+                    path.display()
+                )));
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(Error::Ledger(format!(
+            "cannot inspect {}: {error}",
+            path.display()
+        ))),
+    }
+}
+
+#[cfg(unix)]
+fn ensure_same_file(path: &Path, file: &File) -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let opened = file
+        .metadata()
+        .map_err(|error| Error::Ledger(format!("cannot stat the open ledger: {error}")))?;
+    let on_disk = std::fs::symlink_metadata(path).map_err(|error| {
+        Error::Ledger(format!(
+            "cannot re-check {} after opening it: {error}",
+            path.display()
+        ))
+    })?;
+    if on_disk.file_type().is_symlink()
+        || !on_disk.is_file()
+        || opened.dev() != on_disk.dev()
+        || opened.ino() != on_disk.ino()
+    {
+        return Err(Error::Ledger(format!(
+            "{} changed while it was opened; make the ledger directory private and retry",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn ensure_same_file(_path: &Path, _file: &File) -> Result<()> {
+    Ok(())
+}
+
 #[cfg(unix)]
 fn lock_down_dir(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -463,18 +509,19 @@ fn lock_down_dir(_path: &Path) -> Result<()> {
 }
 
 #[cfg(unix)]
-fn lock_down_file(path: &Path) -> Result<()> {
+fn lock_down_file(path: &Path, file: &File) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
-        Error::Ledger(format!(
-            "cannot restrict {} to its owner: {error}",
-            path.display()
-        ))
-    })
+    file.set_permissions(std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| {
+            Error::Ledger(format!(
+                "cannot restrict {} to its owner: {error}",
+                path.display()
+            ))
+        })
 }
 
 #[cfg(not(unix))]
-fn lock_down_file(_path: &Path) -> Result<()> {
+fn lock_down_file(_path: &Path, _file: &File) -> Result<()> {
     Ok(())
 }
 
@@ -597,6 +644,16 @@ mod tests {
         drop(held);
         assert!(ledger.reserve(6, 10).is_ok(), "the budget frees on drop");
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_directory_is_not_a_ledger() {
+        let dir = std::env::temp_dir().join(format!("ownserp-ledger-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        assert!(Ledger::open(&dir).is_err());
+        assert!(verify(&dir).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -1,6 +1,8 @@
 use std::num::NonZeroU32;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::task::{Context, Poll};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use axum::Json;
@@ -12,6 +14,7 @@ use axum::http::{
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
+use axum::serve::Listener;
 use axum::{Router, middleware};
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
@@ -22,7 +25,9 @@ use rmcp::transport::streamable_http_server::session::never::NeverSessionManager
 use secrecy::ExposeSecret;
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use tokio::sync::Semaphore;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tower_http::timeout::RequestBodyDeadlineLayer;
 use tracing::Instrument;
 
@@ -33,6 +38,7 @@ use crate::error::{Error, Result};
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_ID: usize = 128;
 const MIN_TOKEN_CHARS: usize = 32;
+const MAX_CONNECTIONS: usize = 256;
 const MAX_CONCURRENT_REQUESTS: usize = 128;
 const REQUEST_TIMEOUT_SECS: u64 = 120;
 const BODY_DEADLINE_SECS: u64 = 30;
@@ -115,11 +121,11 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), gate_requests))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            limit_requests,
+            require_bearer,
         ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_bearer,
+            limit_requests,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), require_host))
         .layer(middleware::from_fn_with_state(
@@ -134,7 +140,7 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .route("/healthz", get(healthz))
         .merge(protected)
         .layer(middleware::from_fn(security_headers));
-    let listener = tokio::net::TcpListener::bind(&bind)
+    let listener = TcpListener::bind(&bind)
         .await
         .map_err(|error| Error::Config(format!("bind {bind}: {error}")))?;
     if !tokens_configured
@@ -154,6 +160,10 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         );
     }
     let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let listener = LimitedListener {
+        inner: listener,
+        connections: Arc::new(Semaphore::new(MAX_CONNECTIONS)),
+    };
     let server = axum::serve(listener, app).with_graceful_shutdown(async move {
         let _ = stop_rx.changed().await;
     });
@@ -174,6 +184,8 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
                         grace_secs = SHUTDOWN_GRACE_SECS,
                         "shutdown grace period elapsed with requests still open"
                     );
+                    handle.abort();
+                    let _ = handle.await;
                     Ok(())
                 }
             }
@@ -188,6 +200,93 @@ fn http_result(
         Ok(Ok(())) => Ok(()),
         Ok(Err(error)) => Err(Error::Config(format!("http server: {error}"))),
         Err(error) => Err(Error::Config(format!("http server task: {error}"))),
+    }
+}
+
+// One permit per socket bounds file descriptors and idle connections.
+struct LimitedListener {
+    inner: TcpListener,
+    connections: Arc<Semaphore>,
+}
+
+struct LimitedStream {
+    inner: TcpStream,
+    _permit: OwnedSemaphorePermit,
+}
+
+impl Listener for LimitedListener {
+    type Io = LimitedStream;
+    type Addr = std::net::SocketAddr;
+
+    async fn accept(&mut self) -> (Self::Io, Self::Addr) {
+        loop {
+            let permit = match Arc::clone(&self.connections).acquire_owned().await {
+                Ok(permit) => permit,
+                Err(_) => {
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
+                }
+            };
+            match self.inner.accept().await {
+                Ok((stream, address)) => {
+                    return (
+                        LimitedStream {
+                            inner: stream,
+                            _permit: permit,
+                        },
+                        address,
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "accept failed");
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                }
+            }
+        }
+    }
+
+    fn local_addr(&self) -> std::io::Result<Self::Addr> {
+        self.inner.local_addr()
+    }
+}
+
+impl AsyncRead for LimitedStream {
+    fn poll_read(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_read(context, buffer)
+    }
+}
+
+impl AsyncWrite for LimitedStream {
+    fn poll_write(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write(context, buffer)
+    }
+
+    fn poll_flush(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_flush(context)
+    }
+
+    fn poll_shutdown(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.get_mut().inner).poll_shutdown(context)
+    }
+
+    fn poll_write_vectored(
+        self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[std::io::IoSlice<'_>],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.get_mut().inner).poll_write_vectored(context, buffers)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
     }
 }
 
@@ -307,7 +406,13 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
     let host = request
         .headers()
         .get(axum::http::header::HOST)
-        .and_then(|value| value.to_str().ok());
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            request
+                .uri()
+                .authority()
+                .map(|authority| authority.as_str())
+        });
     let accepted = host.is_some_and(|host| {
         state
             .allowed_hosts
@@ -546,6 +651,35 @@ mod tests {
                 .and_then(|value| value.to_str().ok()),
             Some("1")
         );
+    }
+
+    #[tokio::test]
+    async fn the_limiter_runs_before_the_bearer_gate() {
+        let router = app(state(&["secret"], Some(1)));
+        let first = router.clone().oneshot(probe()).await.expect("response");
+        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
+        let second = router.oneshot(probe()).await.expect("response");
+        assert_eq!(
+            second.status(),
+            StatusCode::TOO_MANY_REQUESTS,
+            "an unauthenticated caller must spend the same rate limit"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_http2_style_authority_counts_as_the_host() {
+        let mut state = state(&[], None);
+        state.allowed_hosts = Arc::new(vec!["localhost".to_owned()]);
+        let router = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state.clone(), require_host))
+            .with_state(state);
+        let request = HttpRequest::builder()
+            .uri("http://localhost/probe")
+            .body(Body::empty())
+            .expect("request");
+        let response = router.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[test]

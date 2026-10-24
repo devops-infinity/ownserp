@@ -82,14 +82,30 @@ impl Settings {
             .clone()
             .or_else(|| Some(default_config_dir().join("profile.toml")));
         let profile = match profile_path.as_deref() {
-            Some(path) if path.exists() => read_profile(path)?,
-            Some(path) if requested_profile.is_some() => {
-                return Err(Error::Config(format!(
-                    "profile {} does not exist; fix --profile or OWN_SERPER_PROFILE",
-                    path.display()
-                )));
+            Some(path) => {
+                let present = match path.try_exists() {
+                    Ok(found) => found,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+                    Err(error) => {
+                        return Err(Error::Config(format!(
+                            "cannot check profile {}: {error}",
+                            path.display()
+                        )));
+                    }
+                };
+                let present = present || std::fs::symlink_metadata(path).is_ok();
+                if present {
+                    read_profile(path)?
+                } else if requested_profile.is_some() {
+                    return Err(Error::Config(format!(
+                        "profile {} does not exist; fix --profile or OWN_SERPER_PROFILE",
+                        path.display()
+                    )));
+                } else {
+                    Profile::default()
+                }
             }
-            _ => Profile::default(),
+            None => Profile::default(),
         };
         if profile.version > 1 {
             let shown = profile_path
@@ -142,6 +158,29 @@ impl Settings {
             .map(|raw| parse_host_list(&raw))
             .filter(|hosts| !hosts.is_empty())
             .or(profile.allowed_hosts);
+        let cache_max_bytes = profile.cache_max_bytes.unwrap_or(16 * 1024 * 1024);
+        if cache_max_bytes > MAX_CACHE_BYTES {
+            return Err(Error::Config(format!(
+                "cache_max_bytes is {cache_max_bytes}; the cap is {MAX_CACHE_BYTES} bytes (1 GiB)"
+            )));
+        }
+        let ledger_dir = overrides
+            .ledger_dir
+            .or_else(|| env("OWN_SERPER_LEDGER_DIR").map(PathBuf::from))
+            .or(profile.ledger_dir)
+            .unwrap_or_else(|| default_data_dir().join("ledger"));
+        if !ledger_dir.is_absolute() {
+            return Err(Error::Config(format!(
+                "ledger_dir {} must be an absolute path",
+                ledger_dir.display()
+            )));
+        }
+        let request_timeout_secs = profile.request_timeout_secs.unwrap_or(30);
+        if !(1..=MAX_REQUEST_TIMEOUT_SECS).contains(&request_timeout_secs) {
+            return Err(Error::Config(format!(
+                "request_timeout_secs is {request_timeout_secs}; use 1 to {MAX_REQUEST_TIMEOUT_SECS}"
+            )));
+        }
         Ok(Self {
             api_key,
             api_key_source,
@@ -162,19 +201,15 @@ impl Settings {
                 .or(cache_ttl_env)
                 .or(profile.cache_ttl_secs)
                 .unwrap_or(0),
-            cache_max_bytes: profile.cache_max_bytes.unwrap_or(16 * 1024 * 1024),
-            ledger_dir: overrides
-                .ledger_dir
-                .or_else(|| env("OWN_SERPER_LEDGER_DIR").map(PathBuf::from))
-                .or(profile.ledger_dir)
-                .unwrap_or_else(|| default_data_dir().join("ledger")),
+            cache_max_bytes,
+            ledger_dir,
             per_call_credit_ceiling: profile.per_call_credit_ceiling,
             session_budget_credits: profile.session_budget_credits,
             enable_batch: overrides
                 .enable_batch
                 .or(profile.enable_batch)
                 .unwrap_or(false),
-            request_timeout_secs: profile.request_timeout_secs.unwrap_or(30),
+            request_timeout_secs,
             http_qps: http_qps_env.or(profile.http_qps),
             profile_path,
         })
@@ -308,10 +343,47 @@ const fn profile_version() -> u32 {
     1
 }
 
+const MAX_PROFILE_BYTES: u64 = 64 * 1024;
+const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024;
+const MAX_REQUEST_TIMEOUT_SECS: u64 = 600;
+
 fn read_profile(path: &Path) -> Result<Profile> {
-    let raw = std::fs::read_to_string(path).map_err(|error| {
+    use std::io::Read as _;
+
+    let metadata = std::fs::metadata(path).map_err(|error| {
+        Error::Config(format!(
+            "cannot inspect profile {}: {error}",
+            path.display()
+        ))
+    })?;
+    if !metadata.is_file() {
+        return Err(Error::Config(format!(
+            "profile {} is not a regular file",
+            path.display()
+        )));
+    }
+    if metadata.len() > MAX_PROFILE_BYTES {
+        return Err(Error::Config(format!(
+            "profile {} is {} bytes, above the {MAX_PROFILE_BYTES} byte cap",
+            path.display(),
+            metadata.len()
+        )));
+    }
+    let file = std::fs::File::open(path).map_err(|error| {
         Error::Config(format!("cannot read profile {}: {error}", path.display()))
     })?;
+    let mut raw = String::new();
+    file.take(MAX_PROFILE_BYTES.saturating_add(1))
+        .read_to_string(&mut raw)
+        .map_err(|error| {
+            Error::Config(format!("cannot read profile {}: {error}", path.display()))
+        })?;
+    if raw.len() as u64 > MAX_PROFILE_BYTES {
+        return Err(Error::Config(format!(
+            "profile {} grew past the {MAX_PROFILE_BYTES} byte cap while it was read",
+            path.display()
+        )));
+    }
     toml::from_str::<Profile>(&raw)
         .map_err(|error| Error::Config(format!("profile {}: {error}", path.display())))
 }
@@ -614,6 +686,63 @@ mod tests {
     }
 
     #[test]
+    fn an_oversized_cache_cap_is_refused() {
+        let error = load(
+            "cachebig",
+            "cache_max_bytes = 1073741825\n",
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("cache_max_bytes"));
+    }
+
+    #[test]
+    fn a_timeout_outside_one_to_six_hundred_is_refused() {
+        for (label, body) in [
+            ("timeout-zero", "request_timeout_secs = 0\n"),
+            ("timeout-big", "request_timeout_secs = 601\n"),
+        ] {
+            let error = load(
+                label,
+                body,
+                &[("SERPER_API_KEY", "test-key")],
+                base_overrides(),
+            )
+            .expect_err("must fail");
+            assert!(error.to_string().contains("request_timeout_secs"));
+        }
+    }
+
+    #[test]
+    fn a_relative_ledger_directory_is_refused() {
+        let error = load(
+            "relative",
+            "",
+            &[("SERPER_API_KEY", "test-key")],
+            Overrides {
+                ledger_dir: Some(PathBuf::from("ownserp-ledger")),
+                ..base_overrides()
+            },
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("absolute"));
+    }
+
+    #[test]
+    fn a_profile_past_the_size_cap_is_refused() {
+        let body = format!("# {}\n", "a".repeat(MAX_PROFILE_BYTES as usize));
+        let error = load(
+            "bigprofile",
+            &body,
+            &[("SERPER_API_KEY", "test-key")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("byte cap"));
+    }
+
+    #[test]
     fn the_debug_output_never_carries_the_key() {
         let settings = load(
             "debug",
@@ -625,6 +754,51 @@ mod tests {
         let rendered = format!("{settings:?}");
         assert!(!rendered.contains("super-secret-value"));
         assert!(rendered.contains("<set>"));
+    }
+
+    #[test]
+    fn a_profile_that_is_not_a_regular_file_is_refused() {
+        let dir = std::env::temp_dir().join(format!("ownserp-profile-dir-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let error = Settings::load_with(
+            Overrides {
+                profile: Some(dir.clone()),
+                ledger_dir: Some(dir.join("ledger")),
+                cache_ttl_secs: Some(0),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("not a regular file"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_profile_is_followed() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("ownserp-profile-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let target = dir.join("real.toml");
+        std::fs::write(&target, "cache_ttl_secs = 5\n").expect("target");
+        let link = dir.join("profile.toml");
+        symlink(&target, &link).expect("link");
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let settings = Settings::load_with(
+            Overrides {
+                profile: Some(link),
+                ledger_dir: Some(dir.join("ledger")),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("a symlink to a regular profile is allowed");
+        assert_eq!(settings.cache_ttl_secs(), 5);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

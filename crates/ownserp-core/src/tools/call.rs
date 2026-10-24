@@ -52,6 +52,19 @@ impl ToolContext {
     }
 }
 
+struct TempKeyFile {
+    path: std::path::PathBuf,
+    armed: bool,
+}
+
+impl Drop for TempKeyFile {
+    fn drop(&mut self) {
+        if self.armed {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     let dir = ledger_dir.parent().unwrap_or(ledger_dir);
     let path = dir.join("args.key");
@@ -84,6 +97,10 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     getrandom::fill(&mut key).map_err(|error| Error::Config(format!("os random: {error}")))?;
     std::fs::create_dir_all(dir)?;
     let temporary = dir.join("args.key.tmp");
+    let mut temporary_guard = TempKeyFile {
+        path: temporary.clone(),
+        armed: true,
+    };
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -103,6 +120,7 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     file.sync_all()?;
     drop(file);
     std::fs::rename(&temporary, &path)?;
+    temporary_guard.armed = false;
     sync_directory(dir);
     Ok(key)
 }
@@ -298,8 +316,11 @@ async fn execute_search(
     })();
     let (envelope, results, top_title, next_token) = match prepared {
         Ok(value) => {
-            if cacheable && cache_age.is_none() {
-                ctx.cache.put(key, Arc::clone(&raw))?;
+            if cacheable
+                && cache_age.is_none()
+                && let Err(error) = ctx.cache.put(key, Arc::clone(&raw))
+            {
+                tracing::warn!(%error, "the response could not be cached");
             }
             value
         }
@@ -325,7 +346,7 @@ async fn execute_search(
             return Err(error);
         }
     };
-    let baseline = serde_json::to_vec_pretty(&raw)?.len();
+    let baseline = serde_json::to_vec(&raw)?.len();
     let fitted = projection::fit_to_budget(envelope, projection::MAX_RESULT_BYTES);
     let emitted = serde_json::to_vec(&fitted)?.len();
     let tokens = (emitted / 4) as u64;
@@ -575,7 +596,6 @@ async fn reviews(
 ) -> Result<CallToolResult> {
     let body = args.body()?;
     let credits = Endpoint::Reviews.base_cost().get();
-    let _reservation = reserve_budget(ctx, credits)?;
     execute_search(
         ctx,
         Endpoint::Reviews,
@@ -596,7 +616,6 @@ async fn lens(
 ) -> Result<CallToolResult> {
     let body = args.body()?;
     let credits = Endpoint::Lens.base_cost().get();
-    let _reservation = reserve_budget(ctx, credits)?;
     execute_search(
         ctx,
         Endpoint::Lens,
@@ -1027,7 +1046,8 @@ async fn record_failure(
         endpoint: endpoint.to_owned(),
         args_hash: args_hash(ctx.hash_key.as_ref(), body),
         credits_estimated: credits,
-        credits_actual: Some(0),
+        // The request may have reached Serper, so charge the estimate rather than zero.
+        credits_actual: None,
         batch_multiplier: 1,
         duration_ms: elapsed_ms(started),
         status: format!("error:{}", error.code()),

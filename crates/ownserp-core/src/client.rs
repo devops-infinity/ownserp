@@ -27,6 +27,7 @@ pub struct SerperClient {
     key: Option<SecretString>,
     limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     base_override: Option<Arc<str>>,
+    attach_key: bool,
 }
 
 impl SerperClient {
@@ -45,11 +46,23 @@ impl SerperClient {
             key: settings.api_key().cloned(),
             limiter: Arc::new(RateLimiter::direct(quota)),
             base_override: None,
+            attach_key: true,
         })
     }
 
     pub fn with_base_url(settings: &Settings, base_url: &str) -> Result<Self> {
+        let parsed =
+            Url::parse(base_url).map_err(|error| Error::Config(format!("base URL: {error}")))?;
+        if !matches!(parsed.scheme(), "http" | "https") {
+            return Err(Error::Config("the base URL must use http or https".into()));
+        }
+        if parsed.scheme() != "https" && !is_loopback_url(&parsed) {
+            return Err(Error::Config(
+                "the base URL must use https unless it is a loopback test server".into(),
+            ));
+        }
         let mut client = Self::new(settings)?;
+        client.attach_key = key_allowed_for(&parsed);
         client.base_override = Some(Arc::from(base_url.trim_end_matches('/')));
         Ok(client)
     }
@@ -82,7 +95,9 @@ impl SerperClient {
                 .post(&url)
                 .header(CONTENT_TYPE, "application/json")
                 .body(bytes.clone());
-            if let Some(key) = &self.key {
+            if self.attach_key
+                && let Some(key) = &self.key
+            {
                 request = request.header("X-API-KEY", key.expose_secret());
             }
             request
@@ -107,7 +122,10 @@ impl SerperClient {
         let requires_key = endpoint.requires_key();
         self.send_with_retry(cancellation, || {
             let mut request = self.http.get(url.clone());
-            if requires_key && let Some(key) = &self.key {
+            if requires_key
+                && self.attach_key
+                && let Some(key) = &self.key
+            {
                 request = request.header("X-API-KEY", key.expose_secret());
             }
             request
@@ -133,7 +151,7 @@ impl SerperClient {
     }
 
     pub async fn live_balance(&self) -> Option<u64> {
-        let key = self.key.as_ref()?;
+        let key = self.key.as_ref().filter(|_| self.attach_key)?;
         let url = format!("{}/account", self.base_for(Host::Google));
         wait_for_permit(&self.limiter).await?;
         let response = self
@@ -205,6 +223,26 @@ impl SerperClient {
             () = cancellation.cancelled() => Err(Error::Cancelled),
         }
     }
+}
+
+fn key_allowed_for(url: &Url) -> bool {
+    is_loopback_url(url) || url.host_str().is_some_and(is_serper_host)
+}
+
+fn is_loopback_url(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Domain(host)) => host.eq_ignore_ascii_case("localhost"),
+        Some(url::Host::Ipv4(address)) => address.is_loopback(),
+        Some(url::Host::Ipv6(address)) => address.is_loopback(),
+        None => false,
+    }
+}
+
+fn is_serper_host(host: &str) -> bool {
+    matches!(
+        host,
+        "google.serper.dev" | "scrape.serper.dev" | "api.serper.dev"
+    )
 }
 
 fn retryable_status(status: u16) -> bool {
@@ -321,6 +359,54 @@ fn install_crypto_provider() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn settings() -> Settings {
+        let dir = std::env::temp_dir().join(format!("ownserp-client-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let profile = dir.join("profile.toml");
+        std::fs::write(&profile, "").expect("profile");
+        let map = std::collections::BTreeMap::from([(
+            "SERPER_API_KEY".to_owned(),
+            "test-key".to_owned(),
+        )]);
+        Settings::load_with(
+            crate::config::Overrides {
+                profile: Some(profile),
+                ledger_dir: Some(dir.join("ledger")),
+                cache_ttl_secs: Some(0),
+                ..crate::config::Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect("settings")
+    }
+
+    #[test]
+    fn a_base_override_must_be_an_http_url() {
+        let settings = settings();
+        assert!(SerperClient::with_base_url(&settings, "ftp://example.org").is_err());
+        assert!(SerperClient::with_base_url(&settings, "not a url").is_err());
+        assert!(SerperClient::with_base_url(&settings, "http://example.org").is_err());
+        assert!(SerperClient::with_base_url(&settings, "https://example.org").is_ok());
+        assert!(SerperClient::with_base_url(&settings, "http://127.0.0.1:9").is_ok());
+    }
+
+    #[test]
+    fn only_a_serper_or_loopback_host_receives_the_key() {
+        let settings = settings();
+        let local = SerperClient::with_base_url(&settings, "http://127.0.0.1:9").expect("client");
+        assert!(
+            local.attach_key,
+            "a local mock is inside the trust boundary"
+        );
+        let foreign =
+            SerperClient::with_base_url(&settings, "https://example.org").expect("client");
+        assert!(!foreign.attach_key, "a foreign host must not get the key");
+        let serper =
+            SerperClient::with_base_url(&settings, "https://google.serper.dev").expect("client");
+        assert!(serper.attach_key);
+        assert!(SerperClient::new(&settings).expect("client").attach_key);
+    }
 
     #[test]
     fn only_transient_statuses_are_retried() {
