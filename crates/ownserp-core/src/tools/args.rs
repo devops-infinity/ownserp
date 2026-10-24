@@ -7,6 +7,8 @@ use crate::cost::Endpoint;
 use crate::error::{Error, Result};
 use crate::types::{MapViewport, Preset, TextMode, TimeFilter};
 
+pub(crate) const MAX_BATCH_QUERIES: usize = 100;
+
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SearchArgs {
@@ -328,12 +330,13 @@ fn valid_url(raw: &str) -> Result<String> {
     if parsed.host_str().is_none() {
         return Err(Error::InvalidArgs("url has no host".into()));
     }
-    if trimmed.chars().count() > 2048 {
+    let normalized = parsed.as_str().to_owned();
+    if normalized.chars().count() > 2048 {
         return Err(Error::InvalidArgs(
             "url is longer than 2048 characters".into(),
         ));
     }
-    Ok(trimmed.to_owned())
+    Ok(normalized)
 }
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
@@ -412,9 +415,9 @@ impl BatchArgs {
         if self.queries.is_empty() {
             return Err(Error::InvalidArgs("queries is empty".into()));
         }
-        if self.queries.len() > 100 {
+        if self.queries.len() > MAX_BATCH_QUERIES {
             return Err(Error::InvalidArgs(format!(
-                "queries holds {} items, above the 100 limit",
+                "queries holds {} items, above the {MAX_BATCH_QUERIES} limit",
                 self.queries.len()
             )));
         }
@@ -523,6 +526,17 @@ mod tests {
         assert_eq!(live.live, Some(true));
         let default: SessionArgs = serde_json::from_value(serde_json::json!({})).expect("parse");
         assert_eq!(default.live, None);
+    }
+
+    #[test]
+    fn a_url_is_normalized_before_it_is_sent() {
+        let args: ScrapeArgs =
+            serde_json::from_value(serde_json::json!({"url": "https://example.org/\tevil"}))
+                .expect("parse");
+        let body = args.body().expect("body");
+        let sent = body.get("url").and_then(Value::as_str).expect("url");
+        assert!(!sent.contains('\t'));
+        assert_eq!(sent, "https://example.org/evil");
     }
 
     #[test]

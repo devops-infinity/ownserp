@@ -20,16 +20,14 @@ mod common {
         cache_ttl: u64,
         enable_batch: bool,
     ) -> ToolContext {
+        let dir =
+            std::env::temp_dir().join(format!("ownserp-contract-{}-{label}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let profile = dir.join("profile.toml");
+        std::fs::write(&profile, "").expect("profile");
         let settings = Settings::load(Overrides {
-            profile: Some(
-                std::env::temp_dir()
-                    .join(format!("ownserp-contract-{}-{label}", std::process::id()))
-                    .join("absent-profile.toml"),
-            ),
-            ledger_dir: Some(
-                std::env::temp_dir()
-                    .join(format!("ownserp-contract-{}-{label}", std::process::id())),
-            ),
+            profile: Some(profile),
+            ledger_dir: Some(dir),
             cache_ttl_secs: Some(cache_ttl),
             enable_batch: Some(enable_batch),
             ..Overrides::default()
@@ -902,6 +900,31 @@ async fn a_rate_limit_is_not_retried() {
     .await;
     let value = result_json(&result);
     assert_eq!(code(&value), Some("serper.rate_limited"));
+}
+
+#[tokio::test]
+async fn a_cancelled_call_reports_cancellation() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_delay(std::time::Duration::from_secs(2))
+                .set_body_json(json!({"organic": []})),
+        )
+        .mount(&server)
+        .await;
+    let ctx = context("cancel", &server.uri(), 0);
+    let args = arguments(json!({"q": "apple inc"}));
+    let token = CancellationToken::new();
+    let signal = token.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        signal.cancel();
+    });
+    let result = call_tool(&ctx, "serper_search", Some(&args), &token).await;
+    let value = result_json(&result);
+    assert_eq!(code(&value), Some("serper.cancelled"));
 }
 
 #[tokio::test]

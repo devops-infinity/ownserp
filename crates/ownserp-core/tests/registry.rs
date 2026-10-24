@@ -132,10 +132,13 @@ fn batch_is_gated_by_configuration() {
 
     let dir =
         std::env::temp_dir().join(format!("ownserp-test-batch-enabled-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let profile = dir.join("profile.toml");
+    std::fs::write(&profile, "").expect("profile");
     let overrides = Overrides {
         enable_batch: Some(true),
-        ledger_dir: Some(dir.clone()),
-        profile: Some(dir.join("absent.toml")),
+        ledger_dir: Some(dir),
+        profile: Some(profile),
         cache_ttl_secs: Some(0),
         ..Overrides::default()
     };

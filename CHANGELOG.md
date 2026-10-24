@@ -6,14 +6,49 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-10-24
+
 ### Added
 
 - `tools/registry-auth.sh`, which refreshes the GitHub, npm, crates.io, MCP Registry, and ghcr sessions from the environment variables in the shell.
+- `serve --no-http` and `serve --no-batch`, so a profile setting can be turned off from the command line.
 
 ### Changed
 
 - The container image is public, so an anonymous pull works.
 - The MCP Registry entry for 0.1.3 lists the npm package, and the README carries the `mcp-name` marker so a later crate release can list the cargo package too.
+- The HTTP request deadline is 120 seconds, down from 300.
+- The HTTP transport rejects any request that carries an `Origin` header and answers a missing or bad bearer token with `WWW-Authenticate: Bearer`.
+- A loopback bind accepts `localhost`, `127.0.0.1`, and `::1` as the Host, and `OWN_SERPER_ALLOWED_HOSTS` is resolved with the rest of the settings instead of read at serve time.
+- The archive and the container image are built with the `dist` profile.
+- `tools/release.sh --prepare` stamps the `ownserp-core` requirement, the README install version, the npm package and loader, and the Dockerfile label, and it verifies `Cargo.lock` and every other stamp before it reports success.
+- A 5xx response is still retried within the attempt cap, on the rule in ADR 0002 that a failed call is not billed; the 0.1.3 note that described connect-only retries is superseded.
+- The container image installs the CA bundle, so outbound TLS uses the system trust store.
+- A retry backoff ends as soon as the client cancels.
+- The USD rate must be finite and non-negative.
+- `--version` answers under every subcommand.
+
+### Fixed
+
+- A ledger whose last line is valid JSON but has no newline no longer breaks the hash chain on the next start.
+- A failed ledger append stops further paid calls until the ledger is repaired.
+- A failed upstream call records zero credits instead of its estimate.
+- A batch response that is not an array is an error instead of an empty success.
+- `serper_locations` applies the result budget.
+- The cache charges per-entry overhead against its byte cap and stores the response without copying it.
+- An oversized `queries` array is refused before it is parsed.
+- A missing explicit `--profile` is an error instead of silently dropping the budget.
+- `config set-api-key` caps its stdin read and refuses a terminal, so a typed key is never echoed.
+- `audit verify --file` reports a missing ledger instead of verifying zero rows.
+- A URL is normalized before it is sent upstream.
+- Logs on a pipe or in a file carry no ANSI escapes.
+- The `.sha256` file names its archive, so `sha256sum -c` verifies it.
+- The npm package ships both license texts.
+
+### Security
+
+- `args.key` must be a regular file, and it is written through a temporary file before it is renamed into place.
+- The HTTP transport enforces Origin validation and serves legacy protocol clients statelessly instead of failing the handshake.
 
 ## [0.1.3] - 2026-10-24
 

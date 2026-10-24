@@ -108,20 +108,16 @@ impl Endpoint {
     }
 }
 
-pub fn usd_for(credits: u32, pack: PackTier, override_rate: Option<f64>) -> f64 {
-    let per_thousand = override_rate
-        .or_else(|| pack.usd_per_thousand())
-        .unwrap_or(1.0);
+pub fn usd_for(credits: u32, pack: PackTier, override_rate: Option<f64>) -> Option<f64> {
+    let per_thousand = override_rate.or_else(|| pack.usd_per_thousand())?;
     let raw = f64::from(credits) * per_thousand / 1000.0;
-    round_micros(raw)
+    Some(round_micros(raw))
 }
 
-pub fn usd_for_credits(credits: u64, pack: PackTier, override_rate: Option<f64>) -> f64 {
-    let per_thousand = override_rate
-        .or_else(|| pack.usd_per_thousand())
-        .unwrap_or(1.0);
+pub fn usd_for_credits(credits: u64, pack: PackTier, override_rate: Option<f64>) -> Option<f64> {
+    let per_thousand = override_rate.or_else(|| pack.usd_per_thousand())?;
     let raw = credits as f64 * per_thousand / 1000.0;
-    round_micros(raw)
+    Some(round_micros(raw))
 }
 
 fn round_micros(value: f64) -> f64 {
@@ -150,9 +146,15 @@ mod tests {
 
     #[test]
     fn dollars_round_to_six_places() {
-        assert_eq!(usd_for(1, PackTier::Starter, None), 0.001);
-        assert_eq!(usd_for(3, PackTier::Standard, None), 0.00225);
-        assert_eq!(usd_for(1, PackTier::Custom, Some(2.0)), 0.002);
+        assert_eq!(usd_for(1, PackTier::Starter, None), Some(0.001));
+        assert_eq!(usd_for(3, PackTier::Standard, None), Some(0.00225));
+        assert_eq!(usd_for(1, PackTier::Custom, Some(2.0)), Some(0.002));
+    }
+
+    #[test]
+    fn an_unset_custom_rate_stays_unknown() {
+        assert_eq!(usd_for(1, PackTier::Custom, None), None);
+        assert_eq!(usd_for_credits(500, PackTier::Custom, None), None);
     }
 
     #[test]

@@ -20,7 +20,7 @@ path = "src/main.rs"
 workspace = true
 
 [dependencies]
-ownserp-core = { path = "../ownserp-core", version = "0.1.0" }
+ownserp-core = { path = "../ownserp-core", version = "0.1.4" }
 clap.workspace = true
 anyhow.workspace = true
 tokio.workspace = true

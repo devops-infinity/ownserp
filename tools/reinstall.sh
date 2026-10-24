@@ -78,7 +78,7 @@ fi
 
 [[ -x "$BINARY" ]] || die "the build did not produce $BINARY"
 mkdir -p "$INSTALL_DIR"
-INSTALL_TMP="$INSTALL_DIR/.ownserp.new.$$"
+INSTALL_TMP="$(mktemp "$INSTALL_DIR/.ownserp.new.XXXXXX")"
 trap 'rm -f -- "${INSTALL_TMP:-}"' EXIT
 install -m 0755 "$BINARY" "$INSTALL_TMP"
 mv -f -- "$INSTALL_TMP" "$INSTALL_DIR/ownserp"

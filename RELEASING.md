@@ -32,7 +32,7 @@ git switch -c release/prepare-X-Y-Z
 tools/release.sh --prepare --patch
 ```
 
-Use `--minor`, `--major`, or `--version X.Y.Z` instead of `--patch` as needed. It sets the version in `Cargo.toml`, refreshes `Cargo.lock`, sets it in `server.json` and `mcpb/manifest.json`, and inserts the `## [X.Y.Z] - DATE` heading in `CHANGELOG.md`.
+Use `--minor`, `--major`, or `--version X.Y.Z` instead of `--patch` as needed. It sets the version in `Cargo.toml`, the `ownserp-core` requirement, `Cargo.lock`, `server.json`, `mcpb/manifest.json`, the npm package and loader, the Dockerfile label, and the README install snippet, and inserts the `## [X.Y.Z] - DATE` heading in `CHANGELOG.md`.
 
 2. Write the changelog entries under that heading, then commit and merge.
 
@@ -65,7 +65,7 @@ git push origin vX.Y.Z
 npm asks for a one-time code on every publish when the account has two-factor authentication and the stored credential is an interactive login. Replace that once with a granular token that bypasses it:
 
 1. Open https://www.npmjs.com/settings/<your-user>/tokens, choose Generate New Token, then Granular Access Token.
-2. Allow read and write for the `@devops-infinity` scope, and tick "Bypass two-factor authentication".
+2. Allow read and write for the `@devops-infinity/ownserp` package only, set the shortest expiry that covers the release, and tick "Bypass two-factor authentication".
 3. Run `tools/npm-auth-setup.sh` and paste the token. It is read with echo off, written to your user npmrc with owner-only permissions, and never printed.
 
 After that, `tools/publish-npm.sh` publishes the loader package and verifies that the registry answers with the same version. It refuses when `packages/npm` and the workspace disagree on the version, and it names the fix when npm still answers with EOTP.

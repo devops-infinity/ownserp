@@ -21,8 +21,8 @@ use crate::response::{
     SessionOutput, ToolUsage,
 };
 use crate::tools::args::{
-    BatchArgs, HealthArgs, LensArgs, LocationsArgs, ReviewsArgs, ScrapeArgs, SearchArgs,
-    SessionArgs,
+    BatchArgs, HealthArgs, LensArgs, LocationsArgs, MAX_BATCH_QUERIES, ReviewsArgs, ScrapeArgs,
+    SearchArgs, SessionArgs,
 };
 use crate::types::{Preset, TextMode};
 
@@ -55,8 +55,15 @@ impl ToolContext {
 fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     let dir = ledger_dir.parent().unwrap_or(ledger_dir);
     let path = dir.join("args.key");
-    match std::fs::read(&path) {
-        Ok(bytes) => {
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_file() => {
+            return Err(Error::Config(format!(
+                "{} is not a regular file; point the ledger at a directory only you can write",
+                path.display()
+            )));
+        }
+        Ok(_) => {
+            let bytes = std::fs::read(&path)?;
             return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
                 Error::Config(format!(
                     "{} is {} bytes, not the 32-byte arguments key; restore it or remove it on purpose to start a new ledger chain",
@@ -68,7 +75,7 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
             return Err(Error::Config(format!(
-                "cannot read {}: {error}",
+                "cannot inspect {}: {error}",
                 path.display()
             )));
         }
@@ -76,6 +83,7 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|error| Error::Config(format!("os random: {error}")))?;
     std::fs::create_dir_all(dir)?;
+    let temporary = dir.join("args.key.tmp");
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -84,8 +92,30 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
         options.mode(0o600);
     }
     use std::io::Write as _;
-    options.open(&path)?.write_all(&key)?;
+    let mut file = options.open(&temporary).or_else(|error| {
+        if error.kind() == std::io::ErrorKind::AlreadyExists {
+            std::fs::remove_file(&temporary).and_then(|()| options.open(&temporary))
+        } else {
+            Err(error)
+        }
+    })?;
+    file.write_all(&key)?;
+    file.sync_all()?;
+    drop(file);
+    std::fs::rename(&temporary, &path)?;
+    sync_directory(dir);
     Ok(key)
+}
+
+fn sync_directory(dir: &std::path::Path) {
+    #[cfg(unix)]
+    {
+        if let Ok(handle) = std::fs::File::open(dir) {
+            let _ = handle.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = dir;
 }
 
 pub async fn call(
@@ -150,7 +180,10 @@ async fn dispatch(
         "serper_lens" => lens(ctx, parse(arguments)?, cancellation).await,
         "serper_scrape" => scrape(ctx, parse(arguments)?, cancellation).await,
         "serper_locations" => locations(ctx, parse(arguments)?, cancellation).await,
-        "serper_search_batch" => batch(ctx, parse(arguments)?, cancellation).await,
+        "serper_search_batch" => {
+            reject_oversized_queries(arguments)?;
+            batch(ctx, parse(arguments)?, cancellation).await
+        }
         "serper_health" => health(ctx, parse(arguments)?).await,
         "serper_session" => session_totals(ctx, parse(arguments)?).await,
         other => Err(Error::InvalidArgs(format!("unknown tool: {other}"))),
@@ -165,6 +198,22 @@ fn parse<T: DeserializeOwned>(arguments: Option<&Map<String, Value>>) -> Result<
     serde_json::from_value(value).map_err(|error| Error::InvalidArgs(error.to_string()))
 }
 
+fn reject_oversized_queries(arguments: Option<&Map<String, Value>>) -> Result<()> {
+    let Some(queries) = arguments
+        .and_then(|map| map.get("queries"))
+        .and_then(Value::as_array)
+    else {
+        return Ok(());
+    };
+    if queries.len() > MAX_BATCH_QUERIES {
+        return Err(Error::InvalidArgs(format!(
+            "queries holds {} items, above the {MAX_BATCH_QUERIES} limit",
+            queries.len()
+        )));
+    }
+    Ok(())
+}
+
 async fn execute_search_endpoint(
     ctx: &ToolContext,
     endpoint: Endpoint,
@@ -173,7 +222,6 @@ async fn execute_search_endpoint(
 ) -> Result<CallToolResult> {
     let body = args.body(endpoint)?;
     let credits = endpoint.estimated_cost(args.num).get();
-    let _reservation = reserve_budget(ctx, credits)?;
     let cacheable = args.tbs.is_none();
     execute_search(
         ctx,
@@ -206,9 +254,11 @@ async fn execute_search(
     } else {
         None
     };
+    let mut _reservation: Option<Reservation> = None;
     let (raw, cache_age) = match cached {
         Some((raw, age)) => (raw, Some(age)),
         None => {
+            _reservation = reserve_budget(ctx, credits)?;
             let raw = match ctx.client.post(endpoint, &body, cancellation).await {
                 Ok(raw) => raw,
                 Err(error) => {
@@ -249,7 +299,7 @@ async fn execute_search(
     let (envelope, results, top_title, next_token) = match prepared {
         Ok(value) => {
             if cacheable && cache_age.is_none() {
-                ctx.cache.put(key, raw.as_ref().clone())?;
+                ctx.cache.put(key, Arc::clone(&raw))?;
             }
             value
         }
@@ -305,6 +355,7 @@ async fn execute_search(
     let cost = cost_info(ctx, charged, cache_age)?;
     let mut fitted = fitted;
     set_cost(&mut fitted, &cost)?;
+    let fitted = projection::fit_to_budget(fitted, projection::MAX_RESULT_BYTES);
     let text = match mode {
         TextMode::Full => serde_json::to_string(&fitted)?,
         TextMode::Summary => {
@@ -501,9 +552,9 @@ fn result_count(envelope: &Value) -> usize {
 fn placeholder_cost() -> CostInfo {
     CostInfo {
         credits: 0,
-        usd: 0.0,
+        usd: None,
         session_credits: 0,
-        session_usd: 0.0,
+        session_usd: None,
         cache_hit: None,
         cached_age_secs: None,
     }
@@ -622,6 +673,7 @@ async fn scrape(
     let cost = cost_info(ctx, actual, None)?;
     let mut value = value;
     set_cost(&mut value, &cost)?;
+    let value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
         TextMode::Full => serde_json::to_string(&value)?,
         TextMode::Summary => {
@@ -630,8 +682,9 @@ async fn scrape(
                 .as_ref()
                 .map_or(0, |text| text.chars().count());
             format!(
-                "{chars} markdown characters; cost: {} credits (${:.6})",
-                cost.credits, cost.usd
+                "{chars} markdown characters; cost: {} credits ({})",
+                cost.credits,
+                usd_text(cost.usd)
             )
         }
     };
@@ -680,7 +733,8 @@ async fn locations(
     .await;
     let cost = cost_info(ctx, 0, None)?;
     set_cost(&mut envelope, &cost)?;
-    let text = projection::summary_text(result_count(&envelope), top.as_deref(), 0, 0.0);
+    let envelope = projection::fit_to_budget(envelope, projection::MAX_RESULT_BYTES);
+    let text = projection::summary_text(result_count(&envelope), top.as_deref(), 0, Some(0.0));
     Ok(tool_result(envelope, text))
 }
 
@@ -724,42 +778,54 @@ async fn batch(
             return Err(error);
         }
     };
+    let Some(items) = raw.as_array() else {
+        let error = Error::Upstream {
+            status: 200,
+            message: "the batch response was not an array".to_owned(),
+        };
+        record_failure(
+            ctx,
+            "serper_search_batch",
+            endpoint.path(),
+            &body,
+            total,
+            started,
+            &error,
+        )
+        .await;
+        return Err(error);
+    };
     let preset = args.preset();
-    let entries = raw
-        .as_array()
-        .map(|items| {
-            items
-                .iter()
-                .map(|item| {
-                    let query = item
-                        .get("searchParameters")
-                        .and_then(|params| params.get("q"))
-                        .and_then(Value::as_str)
-                        .map(crate::projection::sanitize);
-                    let (results, error) = match project(endpoint, item, preset) {
-                        Ok(projection) => (
-                            projection
-                                .envelope
-                                .get("results")
-                                .and_then(Value::as_array)
-                                .cloned()
-                                .unwrap_or_default(),
-                            None,
-                        ),
-                        Err(error) => (
-                            Vec::new(),
-                            Some(crate::projection::cap(&error.to_string(), 300).0),
-                        ),
-                    };
-                    BatchEntry {
-                        query,
-                        results,
-                        error,
-                    }
-                })
-                .collect::<Vec<_>>()
+    let entries = items
+        .iter()
+        .map(|item| {
+            let query = item
+                .get("searchParameters")
+                .and_then(|params| params.get("q"))
+                .and_then(Value::as_str)
+                .map(crate::projection::sanitize);
+            let (results, error) = match project(endpoint, item, preset) {
+                Ok(projection) => (
+                    projection
+                        .envelope
+                        .get("results")
+                        .and_then(Value::as_array)
+                        .cloned()
+                        .unwrap_or_default(),
+                    None,
+                ),
+                Err(error) => (
+                    Vec::new(),
+                    Some(crate::projection::cap(&error.to_string(), 300).0),
+                ),
+            };
+            BatchEntry {
+                query,
+                results,
+                error,
+            }
         })
-        .unwrap_or_default();
+        .collect::<Vec<_>>();
     let output = BatchOutput {
         entries,
         cost: placeholder_cost(),
@@ -789,13 +855,14 @@ async fn batch(
     let cost = cost_info(ctx, total, None)?;
     let mut value = value;
     set_cost(&mut value, &cost)?;
+    let value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
         TextMode::Full => serde_json::to_string(&value)?,
         TextMode::Summary => format!(
-            "{} queries; cost: {} credits (${:.6})",
+            "{} queries; cost: {} credits ({})",
             output.entries.len(),
             cost.credits,
-            cost.usd
+            usd_text(cost.usd)
         ),
     };
     Ok(tool_result(value, text))
@@ -843,11 +910,12 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
 
 async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallToolResult> {
     let totals = ctx.ledger.totals()?;
+    let pending = ctx.ledger.pending()?;
     let per_tool = totals
         .per_tool
         .iter()
         .map(|(tool, entry)| ToolUsage {
-            tool: tool.clone(),
+            tool: crate::projection::cap(&crate::projection::sanitize(tool), 64).0,
             calls: entry.calls,
             credits: entry.credits,
             tokens: entry.tokens,
@@ -862,7 +930,7 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
     let budget_remaining = ctx
         .settings
         .session_budget_credits()
-        .map(|budget| budget.saturating_sub(totals.credits));
+        .map(|budget| budget.saturating_sub(totals.credits.saturating_add(pending)));
     let output = SessionOutput {
         calls: totals.calls,
         credits: totals.credits,
@@ -881,8 +949,12 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
     };
     let value = serde_json::to_value(&output)?;
     let text = format!(
-        "{} calls; {} credits (${:.6}); {} tokens, {} saved",
-        output.calls, output.credits, output.usd, output.tokens, output.tokens_saved
+        "{} calls; {} credits ({}); {} tokens, {} saved",
+        output.calls,
+        output.credits,
+        usd_text(output.usd),
+        output.tokens,
+        output.tokens_saved
     );
     Ok(tool_result(value, text))
 }
@@ -899,6 +971,10 @@ fn reserve_budget(ctx: &ToolContext, credits: u32) -> Result<Option<Reservation>
         Some(budget) => Ok(Some(ctx.ledger.reserve(credits, budget)?)),
         None => Ok(None),
     }
+}
+
+fn usd_text(usd: Option<f64>) -> String {
+    usd.map_or_else(|| "usd unknown".to_owned(), |value| format!("${value:.6}"))
 }
 
 fn cost_info(ctx: &ToolContext, credits: u32, cache_age: Option<u64>) -> Result<CostInfo> {
@@ -951,7 +1027,7 @@ async fn record_failure(
         endpoint: endpoint.to_owned(),
         args_hash: args_hash(ctx.hash_key.as_ref(), body),
         credits_estimated: credits,
-        credits_actual: None,
+        credits_actual: Some(0),
         batch_multiplier: 1,
         duration_ms: elapsed_ms(started),
         status: format!("error:{}", error.code()),

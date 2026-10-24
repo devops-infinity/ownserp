@@ -1,7 +1,8 @@
-use anyhow::Context;
+use anyhow::{Context, bail};
 use ownserp_core::{Overrides, Settings, default_data_dir};
 
 use crate::cli::{AuditAction, AuditArgs};
+use crate::output::emit;
 
 pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
     match args.action {
@@ -14,12 +15,15 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
                     settings.ledger_dir().join("calls.jsonl")
                 }
             };
-            if !path.exists() && file_is_default(&path) {
-                println!("no ledger yet at {}", path.display());
-                return Ok(());
+            if !path.exists() {
+                if file_is_default(&path) {
+                    emit(&format!("no ledger yet at {}", path.display()))?;
+                    return Ok(());
+                }
+                bail!("no ledger at {}", path.display());
             }
             let rows = ownserp_core::verify(&path).context("verifying the ledger")?;
-            println!("ledger verified: {rows} rows, hash chain intact");
+            emit(&format!("ledger verified: {rows} rows, hash chain intact"))?;
             Ok(())
         }
         AuditAction::Rotate { file } => {
@@ -32,9 +36,12 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
                 }
             };
             let (rows, archive) = ownserp_core::rotate(&path).context("rotating the ledger")?;
-            println!("verified {rows} rows, hash chain intact");
-            println!("archived to {}", archive.display());
-            println!("the next start writes a fresh chain at {}", path.display());
+            emit(&format!("verified {rows} rows, hash chain intact"))?;
+            emit(&format!("archived to {}", archive.display()))?;
+            emit(&format!(
+                "the next start writes a fresh chain at {}",
+                path.display()
+            ))?;
             Ok(())
         }
     }
@@ -110,6 +117,15 @@ mod tests {
             &ownserp_core::default_data_dir().join("ledger/calls.jsonl")
         ));
         assert!(!file_is_default(std::path::Path::new("/tmp/calls.jsonl")));
+    }
+
+    #[test]
+    fn verifying_a_missing_named_ledger_is_an_error() {
+        let path = temp_dir("missing-verify").join("calls.jsonl");
+        let outcome = run(AuditArgs {
+            action: AuditAction::Verify { file: Some(path) },
+        });
+        assert!(outcome.is_err());
     }
 
     #[test]

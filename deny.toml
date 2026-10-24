@@ -29,6 +29,9 @@ deny = [
     { name = "paste", reason = "RUSTSEC-2024-0436, unmaintained; use pastey" },
     { name = "proc-macro-error", reason = "RUSTSEC-2024-0370, unmaintained" },
     { name = "proc-macro-error2", reason = "RUSTSEC-2026-0173, unmaintained" },
+    { name = "native-tls", reason = "the TLS stack is rustls with the ring provider only" },
+    { name = "openssl", reason = "the TLS stack is rustls with the ring provider only" },
+    { name = "openssl-sys", reason = "the TLS stack is rustls with the ring provider only" },
 ]
 
 [sources]
