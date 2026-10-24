@@ -11,13 +11,92 @@ on:
         required: true
         type: string
 
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: true
+
 permissions:
-  contents: write
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: "0"
 
 jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-darwin
+            runner: macos-26
+          - target: x86_64-apple-darwin
+            runner: macos-26
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-24.04
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-24.04
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+          - target: aarch64-unknown-linux-musl
+            runner: ubuntu-24.04-arm
+          - target: x86_64-pc-windows-msvc
+            runner: windows-2025
+    steps:
+      - name: Check out the tag
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+
+      - name: Install the Rust toolchain
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: 1.99.1
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          shared-key: release-${{ matrix.target }}
+
+      - name: Install dist
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
+        with:
+          tool: cargo-dist@0.32.0
+
+      - name: Build the target
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag || github.ref_name }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          mkdir -p target/distrib target/dist-manifests
+          dist build --tag="$TAG" --artifacts=local --target="$TARGET" --no-local-paths --output-format=json > "target/dist-manifests/$TARGET.json"
+          cp "target/dist-manifests/$TARGET.json" "target/distrib/$TARGET-dist-manifest.json"
+
+      - name: Upload the target artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist-${{ matrix.target }}
+          path: target/distrib/
+          if-no-files-found: error
+
   release:
-    runs-on: macos-14
-    timeout-minutes: 60
+    name: Publish the release
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
@@ -26,37 +105,21 @@ jobs:
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - name: Install Rust and the target toolchains
-        run: |
-          rustup toolchain install 1.99.1 --profile minimal
-          rustup target add --toolchain 1.99.1 \
-            aarch64-apple-darwin \
-            x86_64-apple-darwin \
-            aarch64-unknown-linux-gnu \
-            aarch64-unknown-linux-musl \
-            x86_64-unknown-linux-musl \
-            x86_64-unknown-linux-gnu \
-            x86_64-pc-windows-msvc
-          rustup component add --toolchain 1.99.1 llvm-tools-preview
+      - name: Install dist
+        uses: taiki-e/install-action@1e29709c0ec63babbe8f266397a465f29a825f91 # v2
+        with:
+          tool: cargo-dist@0.32.0
 
-      - name: Install the release tools
-        run: |
-          cargo install --locked cargo-dist --version 0.32.0
-          cargo install --locked cargo-zigbuild --version 0.24.0
-          cargo install --locked cargo-xwin --version 0.23.1
-          brew install zig
+      - name: Download the target artifacts
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: dist-*
+          path: target/distrib
+          merge-multiple: true
 
-      - name: Build every target
+      - name: Build the installers
         run: |
           TAG="${{ inputs.tag || github.ref_name }}"
-          mkdir -p target/distrib target/dist-manifests
-          dist plan --tag="$TAG" --output-format=json > "$RUNNER_TEMP/dist-plan.json"
-          jq -r '.ci.github.artifacts_matrix.include[].targets[]' "$RUNNER_TEMP/dist-plan.json" | sort -u > "$RUNNER_TEMP/targets.txt"
-          while IFS= read -r target; do
-            echo "building $target"
-            dist build --tag="$TAG" --artifacts=local --target="$target" --no-local-paths --output-format=json > "target/dist-manifests/$target.json"
-            cp "target/dist-manifests/$target.json" "target/distrib/$target-dist-manifest.json"
-          done < "$RUNNER_TEMP/targets.txt"
           dist build --tag="$TAG" --artifacts=global --no-local-paths
           mkdir -p dist
           find target/distrib -maxdepth 1 -type f -exec cp -p {} dist/ \;
@@ -72,7 +135,7 @@ jobs:
           tar -xzf "dist/ownserp-x86_64-unknown-linux-gnu.tar.gz" -C "$TMP"
           install -m 0755 "$TMP/ownserp-x86_64-unknown-linux-gnu/ownserp" "$TMP/server/ownserp"
           (cd "$TMP" && zip -qr "$GITHUB_WORKSPACE/dist/ownserp-$VERSION.mcpb" manifest.json server)
-          HASH="$(shasum -a 256 "dist/ownserp-$VERSION.mcpb" | awk '{print $1}')"
+          HASH="$(sha256sum "dist/ownserp-$VERSION.mcpb" | awk '{print $1}')"
           printf '%s  %s\n' "$HASH" "ownserp-$VERSION.mcpb" > "dist/ownserp-$VERSION.mcpb.sha256"
 
       - name: Sign the checksums
@@ -83,10 +146,11 @@ jobs:
             echo "MINISIGN_KEY is not set; sha256.sum stays unsigned"
             exit 0
           fi
+          sudo apt-get update
+          sudo apt-get install -y minisign
           mkdir -p "$HOME/.minisign"
           printf '%s\n' "$MINISIGN_KEY" > "$HOME/.minisign/minisign.key"
           chmod 600 "$HOME/.minisign/minisign.key"
-          brew install minisign
           minisign -Sm dist/sha256.sum -s "$HOME/.minisign/minisign.key"
           cp minisign.pub dist/minisign.pub
 
