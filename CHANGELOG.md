@@ -6,6 +6,10 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Changed
+
+- The MCP Registry entry for 0.1.3 lists the npm package, and the README carries the `mcp-name` marker so a later crate release can list the cargo package too.
+
 ## [0.1.3] - 2026-10-24
 
 ### Added

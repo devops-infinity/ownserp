@@ -11,29 +11,6 @@
   "version": "0.1.3",
   "packages": [
     {
-      "registryType": "cargo",
-      "registryBaseUrl": "https://crates.io",
-      "identifier": "ownserp",
-      "version": "0.1.3",
-      "transport": {
-        "type": "stdio"
-      },
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "serve"
-        }
-      ],
-      "environmentVariables": [
-        {
-          "name": "SERPER_API_KEY",
-          "description": "Serper.dev API key, issued at https://serper.dev/api-keys",
-          "isRequired": true,
-          "isSecret": true
-        }
-      ]
-    },
-    {
       "registryType": "npm",
       "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@devops-infinity/ownserp",

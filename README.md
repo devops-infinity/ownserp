@@ -1,5 +1,7 @@
 # OwnSERP
 
+<!-- mcp-name: io.github.devops-infinity/ownserp -->
+
 An MCP server for the Serper.dev search API, with per-call credit accounting.
 
 ## Status
