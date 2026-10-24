@@ -64,7 +64,7 @@ else
 	warn "cargo-llvm-cov is not installed, so the coverage floor was skipped"
 fi
 if command -v gitleaks >/dev/null 2>&1; then
-	run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1
+	run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1 --config .gitleaks.toml
 else
 	warn "gitleaks is not installed, so the secret scan was skipped"
 fi
