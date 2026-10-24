@@ -6,6 +6,10 @@ Everything runs on this machine. There is no GitHub Actions workflow, no hosted 
 
 - Rust 1.99.1 or newer, which `rust-toolchain.toml` pins.
 - The gate tools: `cargo install --locked cargo-audit cargo-deny cargo-machete`, plus `shellcheck`, `shfmt`, `gitleaks`, and `jq` from Homebrew.
+- cargo-dist 0.32.0, which builds the archives and installers: `cargo install --locked cargo-dist --version 0.32.0`.
+- minisign with the secret key at `~/.minisign/minisign.key`. The matching public key is `minisign.pub` at the repository root, and the release signs `sha256.sum` with it. Without the key the checksums ship unsigned with a warning.
+- The cross targets: `rustup target add aarch64-apple-darwin x86_64-apple-darwin aarch64-unknown-linux-gnu aarch64-unknown-linux-musl x86_64-unknown-linux-musl x86_64-pc-windows-gnu`.
+- The cross linkers: `cargo install --locked cargo-zigbuild`, plus `zig` and `zip` from Homebrew.
 - `gh auth login` with push access to `devops-infinity/ownserp`, or `GITHUB_TOKEN` in the environment.
 - `CARGO_REGISTRY_TOKEN` in the environment for crates.io.
 - `MCP_GITHUB_TOKEN`, `GITHUB_PAT`, or `GITHUB_PERSONAL_ACCESS_TOKEN` with the `read:org` scope, so the MCP Registry login needs no browser.
@@ -32,7 +36,7 @@ git switch -c release/prepare-X-Y-Z
 tools/release.sh --prepare --patch
 ```
 
-Use `--minor`, `--major`, or `--version X.Y.Z` instead of `--patch` as needed. It sets the version in `Cargo.toml`, the `ownserp-core` requirement, `Cargo.lock`, `server.json`, `mcpb/manifest.json`, the npm package and loader, the Dockerfile label, and the README install snippet, and inserts the `## [X.Y.Z] - DATE` heading in `CHANGELOG.md`.
+Use `--minor`, `--major`, or `--version X.Y.Z` instead of `--patch` as needed. It sets the version in `Cargo.toml`, the `ownserp-core` requirement, `Cargo.lock`, `server.json`, `mcpb/manifest.json`, the Dockerfile label, and the README install snippet, and inserts the `## [X.Y.Z] - DATE` heading in `CHANGELOG.md`.
 
 2. Write the changelog entries under that heading, then commit and merge.
 
@@ -42,14 +46,14 @@ git push -u origin release/prepare-X-Y-Z
 gh pr create --fill --base main
 ```
 
-3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh` with `OWN_SERPER_STRICT_GATE=1` so no check is skipped, builds the host binary plus the aarch64, musl, and Windows targets with `cargo-zigbuild`, adds shell completions, the manual page, and the MCPB bundle, writes one archive and checksum per target, installs the host binary into `~/.local/bin` (override with `OWN_SERPER_INSTALL_DIR`), and stamps the `x86_64-unknown-linux-gnu` archive digest into the npm loader, which is the target it downloads.
+3. Package from main, on macOS. This refuses an empty changelog section, runs `tools/verify.sh` with `OWN_SERPER_STRICT_GATE=1` so no check is skipped, and runs `dist build` for every target in `[workspace.metadata.dist]`. It writes the archives and checksums, the shell and PowerShell installers, the Homebrew formula, the npm package, and `sha256.sum`, builds the Linux MCPB bundle, and installs the host binary into `~/.local/bin` (override with `OWN_SERPER_INSTALL_DIR`).
 
 ```bash
 git switch main && git pull
 tools/release.sh --package
 ```
 
-The output is one `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256` per target, `dist/ownserp-X.Y.Z.mcpb` plus `.sha256`, and `packages/npm/bin/ownserp.js` now pins the `x86_64-unknown-linux-gnu` archive digest. Commit that stamp on a release branch, open a pull request, and merge it.
+Run this on macOS so the two Darwin targets are built. A Linux host skips them with a warning, because the Apple frameworks need the macOS SDK. The output lands in `dist/`: one archive and checksum per target, `ownserp-installer.sh`, `ownserp-installer.ps1`, `ownserp.rb`, `ownserp-npm-package.tar.gz`, `sha256.sum`, `source.tar.gz`, and the MCPB bundle.
 
 4. Tag the merged commit, then publish, on your order.
 
@@ -57,12 +61,18 @@ The output is one `dist/ownserp-X.Y.Z-<target>.tar.gz` plus `.sha256` per target
 git switch main && git pull
 tools/release.sh --tag
 git push origin vX.Y.Z
-gh release create vX.Y.Z --title "OwnSERP X.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)
-gh release upload vX.Y.Z dist/ownserp-X.Y.Z-* dist/ownserp-X.Y.Z.mcpb*
+gh release create vX.Y.Z dist/* --title "OwnSERP X.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)
 tools/publish-npm.sh
 ```
 
-The tag is created only when the loader pins the archive digest, so the tagged source and the published package agree. Nothing is pushed or published by the release script.
+The tag is created only after `dist/` holds a packaged release. Nothing is pushed or published by the release script.
+
+After the release exists, finish the other channels:
+
+- Homebrew: copy `dist/ownserp.rb` into `devops-infinity/homebrew-tap` under `Formula/ownserp.rb`, run `brew audit --strict devops-infinity/tap/ownserp`, then commit and push the tap.
+- crates.io: `cargo publish -p ownserp-core --locked`, then `cargo publish -p ownserp --locked`.
+- MCP Registry: `mcp-publisher publish`.
+- Container: build and push the image, as before.
 
 ## npm without one-time codes
 
@@ -72,7 +82,7 @@ npm asks for a one-time code on every publish when the account has two-factor au
 2. Allow read and write for the `@devops-infinity/ownserp` package only, set the shortest expiry that covers the release, and tick "Bypass two-factor authentication".
 3. Run `tools/npm-auth-setup.sh` and paste the token. It is read with echo off, written to your user npmrc with owner-only permissions, and never printed.
 
-After that, `tools/publish-npm.sh` publishes the loader package and verifies that the registry answers with the same version. It refuses when `packages/npm` and the workspace disagree on the version, and it names the fix when npm still answers with EOTP.
+After that, `tools/publish-npm.sh` publishes the cargo-dist package from `target/distrib` and verifies that the registry answers with the same version. It refuses when the generated package and the workspace disagree on the version, and it names the fix when npm still answers with EOTP.
 
 ## Install or reinstall locally
 
@@ -90,4 +100,5 @@ tools/reinstall.sh --skip-gate --dir /usr/local/bin
 
 - It does not create or edit a GitHub workflow.
 - It does not commit, push, tag a remote, or publish a release. Those are separate commands you run.
+- It does not push the Homebrew formula. Copy `dist/ownserp.rb` into the tap and push it.
 - It does not publish to crates.io, npm, or the MCP Registry. Each stays a deliberate command after `tools/registry-auth.sh`, so a publish is never an accident.
