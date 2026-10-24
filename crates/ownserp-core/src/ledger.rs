@@ -141,7 +141,7 @@ impl Ledger {
         ensure_same_file(&path, &file)?;
         file.try_lock().map_err(|error| {
             Error::Ledger(format!(
-                "another ownserp process holds {}: {error}",
+                "another ownserp process holds {}; stop it, or give this client its own OWN_SERPER_LEDGER_DIR: {error}",
                 path.display()
             ))
         })?;
