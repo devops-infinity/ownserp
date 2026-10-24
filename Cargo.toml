@@ -11,7 +11,7 @@ readme = "README.md"
 authors = ["Md. Sazzad Hossain Sharkar <sazzad@devops.bd>"]
 repository = "https://github.com/devops-infinity/ownserp"
 homepage = "https://github.com/devops-infinity/ownserp"
-keywords = ["mcp", "serper", "search", "model-context-protocol"]
+keywords = ["mcp", "serper", "search", "search-api"]
 categories = ["command-line-utilities", "web-programming"]
 
 [workspace.dependencies]
