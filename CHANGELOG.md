@@ -4,6 +4,26 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 The minimum supported Rust version is 1.89. Raising it is recorded in this file and ships in a minor release.
 
+## [1.1.0] - 2026-10-24
+
+### Changed
+
+- Release tooling: the npm loader stamp comes from the `x86_64-unknown-linux-gnu` archive, the line is verified after writing, and `--tag` refuses unless the pinned digest is committed.
+- `tools/verify.sh` names every skipped check, and `OWN_SERPER_STRICT_GATE=1` turns a skip into a failure; the release runs that way.
+- `cache_max_bytes` is capped at 1 GiB, `request_timeout_secs` must be 1 to 600, and `ledger_dir` must be an absolute path; each is refused at load with a message that names the field.
+- The container copies only `.cargo/config.toml`, ignores `.cargo` registry credentials, and reads the healthcheck port from `OWN_SERPER_BIND`.
+- The Codex setup example uses `env_vars`, so the API key never enters a command line.
+
+### Fixed
+
+- `serper_reviews` and `serper_lens` reserved the call price twice, so a one-credit call could not fit a one-credit session budget. Each call reserves once now.
+- A failed or cancelled call was booked at zero credits even when the request may have reached Serper. It now charges the estimate, so a timeout cannot spend outside the session budget.
+- A profile that fails a stat fell back to defaults that carry no spend cap. It is now an error, the file must be regular, and the read is capped at 64 KiB.
+- The ledger checks the file type before reading, compares the opened descriptor with the path, and sets permissions through the descriptor, so a symlink or directory swap is refused.
+- The ledger lock error names `OWN_SERPER_LEDGER_DIR` as the way to run a second client.
+- The HTTP rate limiter runs before the bearer gate, connections are capped at 256, the Host check accepts the HTTP/2 authority, and shutdown joins the server task after the grace period.
+- `SerperClient::with_base_url` requires https outside loopback and sends the API key only to a Serper host or a loopback test server.
+
 ## [Unreleased]
 
 ## [1.0.0] - 2026-10-24

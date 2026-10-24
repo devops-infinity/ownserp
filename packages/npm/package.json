@@ -1,6 +1,6 @@
 {
   "name": "@devops-infinity/ownserp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "OwnSERP, an MCP server for the Serper.dev search API",
   "license": "MIT OR Apache-2.0",
   "repository": {
