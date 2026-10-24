@@ -318,7 +318,7 @@ Each result carries `structuredContent` for the data and a one-line text summary
 
 The ledger lives at `$XDG_DATA_HOME/ownserp/ledger/calls.jsonl`, or `~/.local/share/ownserp/ledger/calls.jsonl`. On Windows it lives at `%LOCALAPPDATA%\ownserp\ledger\calls.jsonl`, and when `HOME` is set it follows the Unix path. A row holds the tool, the endpoint, a keyed hash of the arguments, estimated credits, actual credits when the response reports them, duration, status, bytes, and token counts. Query text is never written.
 
-A call that Serper rejects with a 4xx status, or answers with a rate limit, is recorded at zero credits, because nothing was billed. A timeout, a server error, or a cancel is recorded at the estimate, because the request may have reached Serper and been billed.
+A call that Serper rejects with a 4xx or 5xx status, answers with a rate limit, or answers with a redirect is recorded at zero credits, because nothing was billed. A timeout or a cancel is recorded at the estimate, because the request may have reached Serper and been billed.
 
 ```sh
 ownserp audit verify

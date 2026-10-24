@@ -654,14 +654,14 @@ async fn a_one_credit_call_fits_a_one_credit_budget() {
 }
 
 #[tokio::test]
-async fn a_failed_call_charges_its_estimate() {
+async fn a_server_error_charges_nothing() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/search"))
         .respond_with(ResponseTemplate::new(500).set_body_json(json!({"message": "boom"})))
         .mount(&server)
         .await;
-    let ctx = context("failure-charge", &server.uri(), 0);
+    let ctx = context("server-error-charge", &server.uri(), 0);
     let failed = call_tool(
         &ctx,
         "serper_search",
@@ -672,6 +672,12 @@ async fn a_failed_call_charges_its_estimate() {
     assert_eq!(
         error_code(&result_json(&failed)),
         Some("serper.upstream_failed")
+    );
+
+    let ledger = std::fs::read_to_string(ctx.ledger.path().expect("path")).expect("ledger");
+    assert!(
+        ledger.contains("\"credits_actual\":0"),
+        "a 5xx must be booked at zero: {ledger}"
     );
 
     let session = call_tool(
@@ -685,8 +691,8 @@ async fn a_failed_call_charges_its_estimate() {
     assert_eq!(
         body.pointer("/structuredContent/credits")
             .and_then(Value::as_u64),
-        Some(1),
-        "a failed call must still charge its estimate"
+        Some(0),
+        "a 5xx must not spend credits"
     );
     assert_eq!(
         body.pointer("/structuredContent/calls")

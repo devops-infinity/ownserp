@@ -43,14 +43,18 @@ impl ResponseCache {
         self.ttl > Duration::ZERO
     }
 
+    fn lock(&self) -> std::sync::MutexGuard<'_, CacheState> {
+        match self.state.lock() {
+            Ok(state) => state,
+            Err(poisoned) => poisoned.into_inner(),
+        }
+    }
+
     pub fn get(&self, key: &str) -> Result<Option<(Arc<Value>, u64)>> {
         if !self.enabled() {
             return Ok(None);
         }
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Config("cache lock poisoned".into()))?;
+        let mut state = self.lock();
         let Some(entry) = state.entries.get(key) else {
             return Ok(None);
         };
@@ -86,10 +90,10 @@ impl ResponseCache {
             .len()
             .saturating_add(key.len().saturating_mul(2))
             .saturating_add(ENTRY_OVERHEAD_BYTES);
-        let mut state = self
-            .state
-            .lock()
-            .map_err(|_| Error::Config("cache lock poisoned".into()))?;
+        if bytes > self.max_bytes {
+            return Ok(());
+        }
+        let mut state = self.lock();
         if let Some(replaced) = state.entries.remove(&key) {
             state.bytes = state.bytes.saturating_sub(replaced.bytes);
             state.order.retain(|item| item != &key);
@@ -163,6 +167,43 @@ mod tests {
         assert!(entries <= 32, "cache holds {entries} entries");
         assert!(cache.get("key-0").expect("get").is_none());
         assert!(cache.get("key-9999").expect("get").is_some());
+    }
+
+    #[test]
+    fn an_entry_larger_than_the_cap_is_not_stored() {
+        let cache = ResponseCache::new(60, 300);
+        cache
+            .put("small".to_owned(), Arc::new(json!({"a": 1})))
+            .expect("put");
+        let oversized = Arc::new(json!({"big": "a".repeat(400)}));
+        cache.put("big".to_owned(), oversized).expect("put");
+        assert!(
+            cache.get("small").expect("get").is_some(),
+            "an oversized entry must not empty the cache"
+        );
+        assert!(cache.get("big").expect("get").is_none());
+    }
+
+    #[test]
+    fn a_poisoned_cache_lock_still_serves() {
+        let cache = Arc::new(ResponseCache::new(60, 4096));
+        cache
+            .put("kept".to_owned(), Arc::new(json!({"a": 1})))
+            .expect("put");
+        let poisoner = Arc::clone(&cache);
+        let _ = std::thread::spawn(move || {
+            let _guard = poisoner.state.lock().expect("lock");
+            panic!("poison the cache lock on purpose");
+        })
+        .join();
+        assert!(
+            cache.get("kept").expect("get").is_some(),
+            "a poisoned lock must not lose the cache"
+        );
+        cache
+            .put("after".to_owned(), Arc::new(json!({"b": 2})))
+            .expect("put");
+        assert!(cache.get("after").expect("get").is_some());
     }
 
     #[test]

@@ -175,7 +175,9 @@ impl Ledger {
 
     pub fn append(&self, record: CallRecord) -> Result<LedgerRow> {
         let outcome = self.append_inner(record);
-        if outcome.is_err() {
+        if let Err(error) = &outcome
+            && !matches!(error, Error::LedgerBusy(_))
+        {
             self.healthy.store(false, Ordering::Relaxed);
         }
         outcome
@@ -442,6 +444,7 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
     let file = OpenOptions::new().read(true).append(true).open(path)?;
     ensure_same_file(path, &file)?;
     let _locked = LockedFile::exclusive(&file, path, LOCK_WAIT_LIMIT)?;
+    ensure_same_file(path, &file)?;
     let rows = count_chain(&file, path)?;
     let stamp = unix_seconds();
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
@@ -456,6 +459,7 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
         counter = counter.saturating_add(1);
     }
     std::fs::rename(path, &archive)?;
+    sync_parent_dir(path);
     Ok((rows, archive))
 }
 
@@ -607,8 +611,9 @@ fn sync_parent_dir(path: &Path) {
     {
         if let Some(parent) = path.parent()
             && let Ok(handle) = File::open(parent)
+            && let Err(error) = handle.sync_all()
         {
-            let _ = handle.sync_all();
+            tracing::warn!(%error, path = %parent.display(), "could not sync the ledger directory");
         }
     }
     #[cfg(not(unix))]
@@ -674,9 +679,11 @@ fn wait_for_lock(file: &File, path: &Path, limit: Duration, exclusive: bool) -> 
             }
         }
         if Instant::now() >= deadline {
-            return Err(Error::Ledger(format!(
-                "the ledger at {} is held by another ownserp process. An older ownserp holds it for as long as it runs, so stop that copy. To run separately instead, give this client its own OWN_SERPER_LEDGER_DIR",
-                path.display()
+            return Err(Error::LedgerBusy(format!(
+                "{} is held by another process",
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("the ledger")
             )));
         }
         std::thread::sleep(LOCK_WAIT_STEP);
@@ -1117,11 +1124,11 @@ mod tests {
             .err()
             .expect("a held lock must not open")
             .to_string();
+        assert!(message.contains("held by another process"), "{message}");
         assert!(
-            message.contains("held by another ownserp process"),
-            "{message}"
+            !message.contains('/'),
+            "a client-facing message must not carry a path: {message}"
         );
-        assert!(message.contains("OWN_SERPER_LEDGER_DIR"), "{message}");
         assert!(
             elapsed >= Duration::from_millis(60),
             "the wait must respect the limit"
@@ -1131,6 +1138,59 @@ mod tests {
             "the wait must not hang: {elapsed:?}"
         );
         holder.unlock().expect("unlock");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_busy_ledger_stays_healthy() {
+        let path = temp_path("busy-healthy");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::open_within(&path, Duration::from_millis(60)).expect("ledger");
+        let holder = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let outcome = ledger.append(record());
+        let message = outcome.expect_err("a held lock must fail").to_string();
+        assert!(message.contains("busy"), "{message}");
+        let _ = holder.unlock();
+        assert!(
+            ledger.reserve(1, 100).is_ok(),
+            "a busy lock must not latch the ledger as broken"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_rotate_refuses_a_file_replaced_while_it_waited() {
+        let path = temp_path("rotate-race");
+        let _ = std::fs::remove_file(&path);
+        {
+            let ledger = Ledger::open(&path).expect("ledger");
+            ledger.append(record()).expect("append");
+        }
+        let holder = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let rotating = {
+            let path = path.clone();
+            std::thread::spawn(move || rotate(&path))
+        };
+        std::thread::sleep(Duration::from_millis(150));
+        let replacement = path.with_extension("replacement");
+        std::fs::write(&replacement, b"").expect("replacement");
+        std::fs::rename(&replacement, &path).expect("swap in a new file");
+        let _ = holder.unlock();
+        let outcome = rotating.join().expect("join");
+        assert!(
+            outcome.is_err(),
+            "a rotate must not move a file it no longer owns"
+        );
         let _ = std::fs::remove_file(&path);
     }
 

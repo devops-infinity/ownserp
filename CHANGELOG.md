@@ -6,6 +6,18 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Changed
+
+- A call that Serper answers with a 5xx status or a redirect is now recorded at zero credits, because ADR 0002 says only successful calls are billed. A timeout or a cancel keeps the estimate.
+- A lock wait that runs out of time no longer marks the ledger broken for the rest of the process. The call fails with a busy error and the next one tries again.
+- An upstream 400 or 422 now reports `serper.bad_request`, and a JSON parse or shaping failure carries its own remedy instead of advice to check disk space.
+- `LedgerRow`, `Reservation`, and `ToolTotals` are re-exported from `ownserp-core`.
+
+### Fixed
+
+- A cache entry larger than the byte cap no longer empties the cache, and a poisoned cache lock is recovered instead of failing every later call.
+- `ownserp audit rotate` re-checks the ledger file after taking its lock, so a rotate that lost the race cannot archive the wrong file, and the rename is made durable.
+
 ## [1.3.1] - 2026-10-25
 
 ### Fixed
