@@ -254,8 +254,9 @@ package() {
 	tar -xzf "$archive" -C "$stage/unpack"
 	install -m 0755 "$stage/unpack/ownserp-x86_64-unknown-linux-gnu/ownserp" "$stage/bundle/server/ownserp"
 	cp mcpb/manifest.json "$stage/bundle/manifest.json"
+	find "$stage/bundle" -exec touch -t 198001010000 {} +
 	bundle="$DIST_DIR/ownserp-$CURRENT.mcpb"
-	(cd "$stage/bundle" && zip -qr "$bundle" manifest.json server)
+	(cd "$stage/bundle" && zip -qXr "$bundle" manifest.json server)
 	sha256_line_of "$bundle" >"$bundle.sha256"
 	say SUCCESS "wrote $bundle"
 	archive="$DIST_DIR/ownserp-$host.tar.gz"

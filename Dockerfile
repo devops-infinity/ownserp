@@ -9,7 +9,7 @@ FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2
 LABEL org.opencontainers.image.title="OwnSERP" \
       org.opencontainers.image.description="OwnSERP, an MCP server for the Serper.dev search API" \
       org.opencontainers.image.source="https://github.com/devops-infinity/ownserp" \
-      org.opencontainers.image.version="1.2.0" \
+      org.opencontainers.image.version="1.2.1" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

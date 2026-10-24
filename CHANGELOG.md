@@ -4,6 +4,18 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 The minimum supported Rust version is 1.89. Raising it is recorded in this file and ships in a minor release.
 
+## [1.2.1] - 2026-10-25
+
+### Changed
+
+- The MCPB bundle pins entry timestamps and drops extra zip attributes, so the same inputs produce the same file hash on every build.
+- `server.json` lists the npm package, and `tools/publish-npm.sh` sets `mcpName` before packing, so the MCP Registry can check ownership of the published package.
+- `RELEASING.md` gives the publish step for every channel: npm, crates.io, the MCP Registry, Homebrew, and the container, with the order each one needs.
+
+### Fixed
+
+- The MCP Registry entry stopped matching its bundle after a release rerun, because the rebuilt zip carried new timestamps and the recorded hash went stale.
+
 ## [Unreleased]
 
 ## [1.2.0] - 2026-10-24

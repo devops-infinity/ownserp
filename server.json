@@ -8,30 +8,15 @@
     "url": "https://github.com/devops-infinity/ownserp",
     "source": "github"
   },
-  "version": "1.2.0",
+  "version": "1.2.1",
   "packages": [
     {
       "registryType": "npm",
-      "registryBaseUrl": "https://registry.npmjs.org",
       "identifier": "@devops-infinity/ownserp",
-      "version": "1.2.0",
+      "version": "1.2.1",
       "transport": {
         "type": "stdio"
-      },
-      "packageArguments": [
-        {
-          "type": "positional",
-          "value": "serve"
-        }
-      ],
-      "environmentVariables": [
-        {
-          "name": "SERPER_API_KEY",
-          "description": "Serper.dev API key, issued at https://serper.dev/api-keys",
-          "isRequired": true,
-          "isSecret": true
-        }
-      ]
+      }
     }
   ]
 }
