@@ -55,8 +55,6 @@ pub(crate) struct ServeArgs {
     pub(crate) profile: Option<PathBuf>,
     #[arg(long, help = "Directory that holds the call ledger")]
     pub(crate) ledger_dir: Option<PathBuf>,
-    #[arg(long, help = "Client-side queries per second ceiling")]
-    pub(crate) qps: Option<u32>,
     #[arg(long, value_parser = parse_pack, help = "Credit pack tier for dollar figures")]
     pub(crate) pack: Option<PackTier>,
     #[arg(
@@ -98,7 +96,6 @@ impl ServeArgs {
             bind: self.bind,
             profile: self.profile,
             ledger_dir: self.ledger_dir,
-            qps: self.qps,
             pack: self.pack,
             cache_ttl_secs: self.cache_ttl_secs,
             enable_batch,
@@ -235,7 +232,6 @@ mod tests {
             bind: None,
             profile: None,
             ledger_dir: None,
-            qps: None,
             pack: None,
             cache_ttl_secs: None,
             enable_batch: false,
@@ -254,7 +250,6 @@ mod tests {
             bind: None,
             profile: None,
             ledger_dir: None,
-            qps: None,
             pack: None,
             cache_ttl_secs: None,
             enable_batch: false,

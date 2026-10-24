@@ -1,9 +1,6 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use governor::clock::DefaultClock;
-use governor::state::{InMemoryState, NotKeyed};
-use governor::{Quota, RateLimiter};
 use reqwest::Response;
 use reqwest::header::CONTENT_TYPE;
 use secrecy::{ExposeSecret, SecretString};
@@ -25,7 +22,6 @@ const CONNECT_TIMEOUT_SECS: u64 = 5;
 pub struct SerperClient {
     http: reqwest::Client,
     api_key: Option<SecretString>,
-    limiter: Arc<RateLimiter<NotKeyed, InMemoryState, DefaultClock>>,
     base_override: Option<Arc<str>>,
     attach_key: bool,
 }
@@ -40,11 +36,9 @@ impl SerperClient {
             .user_agent(format!("ownserp/{}", crate::VERSION))
             .build()
             .map_err(|error| Error::network("building the HTTP client", error))?;
-        let quota = Quota::per_second(settings.qps().get());
         Ok(Self {
             http,
             api_key: settings.api_key().cloned(),
-            limiter: Arc::new(RateLimiter::direct(quota)),
             base_override: None,
             attach_key: true,
         })
@@ -84,14 +78,13 @@ impl SerperClient {
         body: &Value,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
-        self.post_many(endpoint, body, 1, cancellation).await
+        self.post_many(endpoint, body, cancellation).await
     }
 
     pub async fn post_many(
         &self,
         endpoint: Endpoint,
         body: &Value,
-        permits: usize,
         cancellation: &CancellationToken,
     ) -> Result<Value> {
         let url = format!("{}{}", self.base_for(endpoint.host()), endpoint.path());
@@ -99,7 +92,7 @@ impl SerperClient {
             context: "encoding the request body",
             source: error,
         })?;
-        self.send_with_retry(permits, cancellation, || {
+        self.send_with_retry(cancellation, || {
             let mut request = self
                 .http
                 .post(&url)
@@ -130,7 +123,7 @@ impl SerperClient {
             }
         }
         let requires_key = endpoint.requires_key();
-        self.send_with_retry(1, cancellation, || {
+        self.send_with_retry(cancellation, || {
             let mut request = self.http.get(url.clone());
             if requires_key
                 && self.attach_key
@@ -145,7 +138,6 @@ impl SerperClient {
 
     pub async fn health(&self) -> Option<Value> {
         let url = format!("{}/health", self.base_for(Host::Api));
-        wait_for_permit(&self.limiter).await?;
         let response = self
             .http
             .get(&url)
@@ -163,7 +155,6 @@ impl SerperClient {
     pub async fn account_probe(&self) -> Option<(u16, Option<u64>)> {
         let api_key = self.api_key.as_ref().filter(|_| self.attach_key)?;
         let url = format!("{}/account", self.base_for(Host::Google));
-        wait_for_permit(&self.limiter).await?;
         let response = self
             .http
             .get(&url)
@@ -191,7 +182,6 @@ impl SerperClient {
 
     async fn send_with_retry<F>(
         &self,
-        permits: usize,
         cancellation: &CancellationToken,
         build_request: F,
     ) -> Result<Value>
@@ -201,11 +191,6 @@ impl SerperClient {
         let mut attempt = 0u32;
         loop {
             attempt = attempt.saturating_add(1);
-            match self.acquire_permits(permits, cancellation).await {
-                Ok(()) => {}
-                Err(_) if attempt == 1 => return Err(Error::CancelledBeforeSend),
-                Err(error) => return Err(error),
-            }
             let sent = tokio::select! {
                 result = build_request().send() => result,
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
@@ -234,24 +219,6 @@ impl SerperClient {
                     return Err(Error::network("calling Serper", error));
                 }
             }
-        }
-    }
-
-    async fn acquire_permits(
-        &self,
-        permits: usize,
-        cancellation: &CancellationToken,
-    ) -> Result<()> {
-        for _ in 0..permits.max(1) {
-            self.acquire(cancellation).await?;
-        }
-        Ok(())
-    }
-
-    async fn acquire(&self, cancellation: &CancellationToken) -> Result<()> {
-        tokio::select! {
-            () = self.limiter.until_ready() => Ok(()),
-            () = cancellation.cancelled() => Err(Error::Cancelled),
         }
     }
 }
@@ -283,17 +250,6 @@ fn retryable_status(status: u16) -> bool {
 fn retryable_error(error: &reqwest::Error) -> bool {
     // A timeout can follow a request the upstream already billed, so only a failed connect is retried.
     error.is_connect()
-}
-
-async fn wait_for_permit(
-    limiter: &RateLimiter<NotKeyed, InMemoryState, DefaultClock>,
-) -> Option<()> {
-    tokio::time::timeout(
-        Duration::from_secs(CONNECT_TIMEOUT_SECS),
-        limiter.until_ready(),
-    )
-    .await
-    .ok()
 }
 
 fn backoff(attempt: u32) -> Duration {

@@ -4,7 +4,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::types::{ApiKeySource, PackTier, QpsLimit};
+use crate::types::{ApiKeySource, PackTier};
 
 pub const KEYRING_SERVICE: &str = "ownserp";
 pub const KEYRING_USER: &str = "serper-api-key";
@@ -15,7 +15,6 @@ pub struct Overrides {
     pub bind: Option<String>,
     pub profile: Option<PathBuf>,
     pub ledger_dir: Option<PathBuf>,
-    pub qps: Option<u32>,
     pub pack: Option<PackTier>,
     pub cache_ttl_secs: Option<u64>,
     pub enable_batch: Option<bool>,
@@ -32,7 +31,6 @@ pub struct Settings {
     allowed_hosts: Option<Vec<String>>,
     pack: PackTier,
     usd_per_1k: Option<f64>,
-    qps: QpsLimit,
     cache_ttl_secs: u64,
     cache_max_bytes: usize,
     ledger_dir: PathBuf,
@@ -40,7 +38,6 @@ pub struct Settings {
     session_budget_credits: Option<u64>,
     enable_batch: bool,
     request_timeout_secs: u64,
-    http_qps: Option<u32>,
     profile_path: Option<PathBuf>,
 }
 
@@ -51,7 +48,6 @@ struct Profile {
     _version: u32,
     pack: Option<PackTier>,
     usd_per_1k: Option<f64>,
-    qps: Option<u32>,
     cache_ttl_secs: Option<u64>,
     cache_max_bytes: Option<usize>,
     ledger_dir: Option<PathBuf>,
@@ -62,7 +58,6 @@ struct Profile {
     bind: Option<String>,
     allowed_hosts: Option<Vec<String>>,
     request_timeout_secs: Option<u64>,
-    http_qps: Option<u32>,
 }
 
 impl Settings {
@@ -124,10 +119,8 @@ impl Settings {
                 ),
             },
         };
-        let qps_env = env_parse::<u32>(&env, "OWN_SERPER_QPS")?;
         let cache_ttl_env = env_parse::<u64>(&env, "OWN_SERPER_CACHE_TTL_SECS")?;
         let usd_env = env_parse::<f64>(&env, "SERPER_USD_PER_1K")?;
-        let http_qps_env = env_parse::<u32>(&env, "OWN_SERPER_HTTP_QPS")?;
         let ceiling_env = env_parse::<u32>(&env, "OWN_SERPER_PER_CALL_CREDIT_CEILING")?;
         let budget_env = env_parse::<u64>(&env, "OWN_SERPER_SESSION_BUDGET_CREDITS")?;
         let usd_rate = usd_env.or(profile.usd_per_1k);
@@ -138,11 +131,6 @@ impl Settings {
                 "the USD rate {rate} is not a finite, non-negative number; set SERPER_USD_PER_1K or usd_per_1k"
             )));
         }
-        let qps_raw = overrides
-            .qps
-            .or(qps_env)
-            .or(profile.qps)
-            .unwrap_or_else(|| overrides.pack.or(profile.pack).unwrap_or_default().qps());
         let pack = overrides.pack.or(profile.pack).unwrap_or_default();
         let bearer_tokens = env("OWN_SERPER_BEARER_TOKENS")
             .map(|raw| {
@@ -207,7 +195,6 @@ impl Settings {
             allowed_hosts,
             pack,
             usd_per_1k: usd_rate,
-            qps: QpsLimit::new(qps_raw)?,
             cache_ttl_secs: overrides
                 .cache_ttl_secs
                 .or(cache_ttl_env)
@@ -222,7 +209,6 @@ impl Settings {
                 .or(profile.enable_batch)
                 .unwrap_or(false),
             request_timeout_secs,
-            http_qps: http_qps_env.or(profile.http_qps),
             profile_path,
         })
     }
@@ -267,10 +253,6 @@ impl Settings {
         self.usd_per_1k
     }
 
-    pub fn qps(&self) -> QpsLimit {
-        self.qps
-    }
-
     pub fn cache_ttl_secs(&self) -> u64 {
         self.cache_ttl_secs
     }
@@ -297,10 +279,6 @@ impl Settings {
 
     pub fn request_timeout_secs(&self) -> u64 {
         self.request_timeout_secs
-    }
-
-    pub fn http_qps(&self) -> Option<u32> {
-        self.http_qps
     }
 
     pub fn profile_path(&self) -> Option<&Path> {
@@ -541,7 +519,6 @@ impl std::fmt::Debug for Settings {
             .field("allowed_hosts", &self.allowed_hosts)
             .field("pack", &self.pack)
             .field("usd_per_1k", &self.usd_per_1k)
-            .field("qps", &self.qps)
             .field("cache_ttl_secs", &self.cache_ttl_secs)
             .field("cache_max_bytes", &self.cache_max_bytes)
             .field("ledger_dir", &self.ledger_dir)
@@ -549,7 +526,6 @@ impl std::fmt::Debug for Settings {
             .field("session_budget_credits", &self.session_budget_credits)
             .field("enable_batch", &self.enable_batch)
             .field("request_timeout_secs", &self.request_timeout_secs)
-            .field("http_qps", &self.http_qps)
             .field("profile_path", &self.profile_path)
             .finish()
     }
@@ -614,37 +590,6 @@ mod tests {
         )
         .expect("settings");
         assert_eq!(settings.bind(), "127.0.0.1:2222");
-    }
-
-    #[test]
-    fn an_override_beats_the_environment() {
-        let overrides = Overrides {
-            qps: Some(7),
-            ..base_overrides()
-        };
-        let settings = load(
-            "qps",
-            "",
-            &[("SERPER_API_KEY", "test-key"), ("OWN_SERPER_QPS", "5")],
-            overrides,
-        )
-        .expect("settings");
-        assert_eq!(settings.qps().get().get(), 7);
-    }
-
-    #[test]
-    fn an_unparseable_environment_value_is_an_error() {
-        let error = load(
-            "badqps",
-            "",
-            &[
-                ("SERPER_API_KEY", "test-key"),
-                ("OWN_SERPER_HTTP_QPS", "fast"),
-            ],
-            base_overrides(),
-        )
-        .expect_err("must fail");
-        assert!(error.to_string().contains("OWN_SERPER_HTTP_QPS"));
     }
 
     #[test]

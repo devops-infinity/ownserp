@@ -20,10 +20,6 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
         "usd per 1000 credits: {}",
         format_usd_rate(&settings)
     ))?;
-    emit(&format!(
-        "queries per second ceiling: {}",
-        settings.qps().get()
-    ))?;
     emit(&format!("cache ttl seconds: {}", settings.cache_ttl_secs()))?;
     emit(&format!("cache byte cap: {}", settings.cache_max_bytes()))?;
     emit(&format!(
