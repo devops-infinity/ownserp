@@ -29,6 +29,7 @@ pub struct Settings {
     http: bool,
     bind: String,
     bearer_tokens: Vec<SecretString>,
+    allowed_hosts: Option<Vec<String>>,
     pack: PackTier,
     usd_per_1k: Option<f64>,
     qps: QpsLimit,
@@ -57,6 +58,7 @@ struct Profile {
     enable_batch: Option<bool>,
     http: Option<bool>,
     bind: Option<String>,
+    allowed_hosts: Option<Vec<String>>,
     request_timeout_secs: Option<u64>,
     http_qps: Option<u32>,
 }
@@ -70,13 +72,21 @@ impl Settings {
     where
         F: Fn(&str) -> Option<String>,
     {
-        let profile_path = overrides
+        let requested_profile = overrides
             .profile
             .clone()
-            .or_else(|| env("OWN_SERPER_PROFILE").map(PathBuf::from))
+            .or_else(|| env("OWN_SERPER_PROFILE").map(PathBuf::from));
+        let profile_path = requested_profile
+            .clone()
             .or_else(|| Some(default_config_dir().join("profile.toml")));
         let profile = match profile_path.as_deref() {
             Some(path) if path.exists() => read_profile(path)?,
+            Some(path) if requested_profile.is_some() => {
+                return Err(Error::Config(format!(
+                    "profile {} does not exist; fix --profile or OWN_SERPER_PROFILE",
+                    path.display()
+                )));
+            }
             _ => Profile::default(),
         };
         let api_key = env("SERPER_API_KEY")
@@ -94,6 +104,14 @@ impl Settings {
         let cache_ttl_env = env_parse::<u64>(&env, "OWN_SERPER_CACHE_TTL_SECS")?;
         let usd_env = env_parse::<f64>(&env, "SERPER_USD_PER_1K")?;
         let http_qps_env = env_parse::<u32>(&env, "OWN_SERPER_HTTP_QPS")?;
+        let usd_rate = usd_env.or(profile.usd_per_1k);
+        if let Some(rate) = usd_rate
+            && (!rate.is_finite() || rate < 0.0)
+        {
+            return Err(Error::Config(format!(
+                "the USD rate {rate} is not a finite, non-negative number; set SERPER_USD_PER_1K or usd_per_1k"
+            )));
+        }
         let qps_raw = overrides
             .qps
             .or(qps_env)
@@ -109,6 +127,10 @@ impl Settings {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let allowed_hosts = env("OWN_SERPER_ALLOWED_HOSTS")
+            .map(|raw| parse_host_list(&raw))
+            .filter(|hosts| !hosts.is_empty())
+            .or(profile.allowed_hosts);
         Ok(Self {
             api_key,
             api_key_source,
@@ -120,8 +142,9 @@ impl Settings {
                 .or(profile.bind)
                 .unwrap_or_else(|| "127.0.0.1:8777".to_owned()),
             bearer_tokens,
+            allowed_hosts,
             pack,
-            usd_per_1k: usd_env.or(profile.usd_per_1k),
+            usd_per_1k: usd_rate,
             qps: QpsLimit::new(qps_raw)?,
             cache_ttl_secs: overrides
                 .cache_ttl_secs
@@ -172,6 +195,10 @@ impl Settings {
 
     pub fn bearer_tokens(&self) -> &[SecretString] {
         &self.bearer_tokens
+    }
+
+    pub fn allowed_hosts(&self) -> Option<&[String]> {
+        self.allowed_hosts.as_deref()
     }
 
     pub fn pack(&self) -> PackTier {
@@ -231,14 +258,11 @@ impl Settings {
 }
 
 pub fn mask(secret: &str) -> String {
-    let chars: Vec<char> = secret.chars().collect();
-    if chars.len() <= 4 {
+    let count = secret.chars().count();
+    if count <= 4 {
         return "****".to_owned();
     }
-    let tail: String = chars
-        .iter()
-        .skip(chars.len().saturating_sub(4))
-        .collect::<String>();
+    let tail: String = secret.chars().skip(count.saturating_sub(4)).collect();
     format!("****{tail}")
 }
 
@@ -261,8 +285,18 @@ fn env_parse<T: std::str::FromStr>(
     })
 }
 
+fn parse_host_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|host| !host.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
 fn read_profile(path: &Path) -> Result<Profile> {
-    let raw = std::fs::read_to_string(path)?;
+    let raw = std::fs::read_to_string(path).map_err(|error| {
+        Error::Config(format!("cannot read profile {}: {error}", path.display()))
+    })?;
     toml::from_str::<Profile>(&raw)
         .map_err(|error| Error::Config(format!("profile {}: {error}", path.display())))
 }
@@ -278,6 +312,7 @@ pub fn default_data_dir() -> PathBuf {
 fn base_dir(variable: &str, fallback: &str) -> PathBuf {
     std::env::var_os(variable)
         .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
         .unwrap_or_else(|| PathBuf::from("."))
 }
@@ -326,6 +361,7 @@ impl std::fmt::Debug for Settings {
             .field("http", &self.http)
             .field("bind", &self.bind)
             .field("bearer_tokens", &self.bearer_tokens.len())
+            .field("allowed_hosts", &self.allowed_hosts)
             .field("pack", &self.pack)
             .field("usd_per_1k", &self.usd_per_1k)
             .field("qps", &self.qps)
@@ -462,6 +498,54 @@ mod tests {
         )
         .expect("settings");
         assert_eq!(settings.usd_per_1k(), Some(0.42));
+    }
+
+    #[test]
+    fn an_explicit_profile_that_is_missing_is_refused() {
+        let map = environment(&[("SERPER_API_KEY", "test-key")]);
+        let error = Settings::load_with(
+            Overrides {
+                profile: Some(
+                    std::env::temp_dir().join("ownserp-profile-missing-do-not-create.toml"),
+                ),
+                ledger_dir: Some(std::env::temp_dir().join("ownserp-config-ledger")),
+                ..Overrides::default()
+            },
+            |name| map.get(name).cloned(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn allowed_hosts_come_from_the_environment_first() {
+        let settings = load(
+            "hosts",
+            "allowed_hosts = [\"profile.example\"]\n",
+            &[
+                ("SERPER_API_KEY", "test-key"),
+                ("OWN_SERPER_ALLOWED_HOSTS", " one.example , two.example "),
+            ],
+            base_overrides(),
+        )
+        .expect("settings");
+        let hosts = settings.allowed_hosts().expect("hosts");
+        assert_eq!(
+            hosts,
+            vec!["one.example".to_owned(), "two.example".to_owned()]
+        );
+    }
+
+    #[test]
+    fn a_non_finite_rate_is_refused() {
+        let error = load(
+            "usdnan",
+            "",
+            &[("SERPER_API_KEY", "test-key"), ("SERPER_USD_PER_1K", "NaN")],
+            base_overrides(),
+        )
+        .expect_err("must fail");
+        assert!(error.to_string().contains("SERPER_USD_PER_1K"));
     }
 
     #[test]

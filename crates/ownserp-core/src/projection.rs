@@ -80,7 +80,12 @@ pub fn sanitize(raw: &str) -> String {
         }
         out.push(ch);
     }
-    out.trim().to_owned()
+    let trimmed = out.trim();
+    if trimmed.len() == out.len() {
+        out
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 pub(crate) fn cap(input: &str, max_chars: usize) -> (String, bool) {
@@ -918,9 +923,15 @@ fn shrink_text(value: &mut Value, max_bytes: usize) {
     }
 }
 
-pub fn summary_text(results: usize, top_title: Option<&str>, credits: u32, usd: f64) -> String {
+pub fn summary_text(
+    results: usize,
+    top_title: Option<&str>,
+    credits: u32,
+    usd: Option<f64>,
+) -> String {
     let top = cap(top_title.unwrap_or("no title"), 160).0;
-    format!("{results} results; top: {top}; cost: {credits} credits (${usd:.6})")
+    let price = usd.map_or_else(|| "usd unknown".to_owned(), |value| format!("${value:.6}"));
+    format!("{results} results; top: {top}; cost: {credits} credits ({price})")
 }
 
 #[cfg(test)]
@@ -1249,10 +1260,16 @@ mod search_item_tests {
 
     #[test]
     fn the_summary_line_carries_the_count_and_the_cost() {
-        let line = summary_text(3, Some("Top"), 2, 0.0015);
+        let line = summary_text(3, Some("Top"), 2, Some(0.0015));
         assert!(line.starts_with("3 results"));
         assert!(line.contains("Top"));
         assert!(line.contains("2 credits"));
         assert!(line.contains("$0.001500"));
+    }
+
+    #[test]
+    fn an_unknown_rate_is_named_in_the_summary() {
+        let line = summary_text(1, None, 2, None);
+        assert!(line.contains("usd unknown"));
     }
 }

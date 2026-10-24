@@ -13,7 +13,9 @@
     "ownserp": "bin/ownserp.js"
   },
   "files": [
-    "bin"
+    "bin",
+    "LICENSE-MIT",
+    "LICENSE-APACHE"
   ],
   "os": [
     "linux"

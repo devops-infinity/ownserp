@@ -6,9 +6,11 @@ use serde_json::Value;
 #[serde(rename_all = "camelCase")]
 pub struct CostInfo {
     pub credits: u32,
-    pub usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd: Option<f64>,
     pub session_credits: u64,
-    pub session_usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_usd: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cache_hit: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -430,7 +432,8 @@ pub struct ToolUsage {
 pub struct SessionOutput {
     pub calls: u64,
     pub credits: u64,
-    pub usd: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usd: Option<f64>,
     pub tokens: u64,
     pub tokens_saved: u64,
     pub cache_hits: u64,

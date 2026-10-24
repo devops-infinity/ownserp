@@ -6,6 +6,8 @@ use serde_json::Value;
 
 use crate::error::{Error, Result};
 
+const ENTRY_OVERHEAD_BYTES: usize = 128;
+
 struct Entry {
     body: Arc<Value>,
     stored: Instant,
@@ -72,16 +74,18 @@ impl ResponseCache {
         }
     }
 
-    pub fn put(&self, key: String, body: Value) -> Result<()> {
+    pub fn put(&self, key: String, body: Arc<Value>) -> Result<()> {
         if !self.enabled() {
             return Ok(());
         }
-        let bytes = serde_json::to_vec(&body)
+        let bytes = serde_json::to_vec(body.as_ref())
             .map_err(|error| Error::Json {
                 context: "measuring a cached response",
                 source: error,
             })?
-            .len();
+            .len()
+            .saturating_add(key.len().saturating_mul(2))
+            .saturating_add(ENTRY_OVERHEAD_BYTES);
         let mut state = self
             .state
             .lock()
@@ -95,7 +99,7 @@ impl ResponseCache {
         state.entries.insert(
             key,
             Entry {
-                body: Arc::new(body),
+                body,
                 stored: Instant::now(),
                 bytes,
             },
@@ -120,16 +124,22 @@ mod tests {
     #[test]
     fn a_disabled_cache_never_stores() {
         let cache = ResponseCache::new(0, 1024);
-        cache.put("k".to_owned(), json!({"a": 1})).expect("put");
+        cache
+            .put("k".to_owned(), Arc::new(json!({"a": 1})))
+            .expect("put");
         assert!(cache.get("k").expect("get").is_none());
     }
 
     #[test]
     fn the_byte_cap_evicts_the_oldest_entry() {
-        let cache = ResponseCache::new(60, 120);
-        let body = json!({"x": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"});
-        cache.put("first".to_owned(), body.clone()).expect("put");
-        cache.put("second".to_owned(), body.clone()).expect("put");
+        let cache = ResponseCache::new(60, 500);
+        let body = Arc::new(json!({"x": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}));
+        cache
+            .put("first".to_owned(), Arc::clone(&body))
+            .expect("put");
+        cache
+            .put("second".to_owned(), Arc::clone(&body))
+            .expect("put");
         cache.put("third".to_owned(), body).expect("put");
         assert!(cache.get("first").expect("get").is_none());
         assert!(cache.get("third").expect("get").is_some());
@@ -139,10 +149,10 @@ mod tests {
     fn a_long_run_of_inserts_stays_under_the_byte_cap() {
         let cap = 4 * 1024;
         let cache = ResponseCache::new(600, cap);
-        let body = json!({"x": "a".repeat(200)});
+        let body = Arc::new(json!({"x": "a".repeat(200)}));
         for index in 0..10_000 {
             cache
-                .put(format!("key-{index}"), body.clone())
+                .put(format!("key-{index}"), Arc::clone(&body))
                 .expect("put");
         }
         let (entries, bytes) = cache.usage();
@@ -158,7 +168,9 @@ mod tests {
     #[test]
     fn a_hit_reports_its_age() {
         let cache = ResponseCache::new(60, 1024);
-        cache.put("k".to_owned(), json!({"a": 1})).expect("put");
+        cache
+            .put("k".to_owned(), Arc::new(json!({"a": 1})))
+            .expect("put");
         let (body, age) = cache.get("k").expect("get").expect("hit");
         assert_eq!(*body, json!({"a": 1}));
         assert_eq!(age, 0);

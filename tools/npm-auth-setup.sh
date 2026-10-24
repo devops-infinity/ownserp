@@ -17,8 +17,9 @@ Store a granular npm access token for publishing, so npm publish never asks
 for a one-time code.
 
 Create the token once at https://www.npmjs.com/settings/<your-user>/tokens:
-choose Granular Access Token, allow read and write for the @devops-infinity
-scope, and tick "Bypass two-factor authentication".
+choose Granular Access Token, allow read and write for the
+@devops-infinity/ownserp package only, set the shortest expiry that covers the
+release, and tick "Bypass two-factor authentication".
 
 The token is read from this terminal with echo off. It is written only to
 your user npmrc, with owner-only permissions, and never printed.

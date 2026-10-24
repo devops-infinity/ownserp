@@ -344,9 +344,13 @@ http_qps = 0
 
 `ledger_dir` takes an absolute path. The file is a TOML document, so a `~` or a variable is stored literally rather than expanded.
 
+`session_budget_credits` counts every credit written to the current ledger chain, across restarts, and `ownserp audit rotate` starts a fresh count. `allowed_hosts` lists the Host names HTTP mode accepts; leave it unset to derive them from the bind address.
+
+A custom pack with no `usd_per_1k` reports credits with no dollar figure, because the rate is unknown.
+
 The cache is off by default. `cache_ttl_secs` above zero turns it on; a hit answers with `cacheHit: true` and charges nothing. A call with `tbs` set skips the cache.
 
-`ownserp doctor` prints every resolved setting and its source, masks the key, and probes both hosts.
+`ownserp doctor` prints the resolved settings, masks the key, names where the key came from, and probes both hosts. `ownserp config show` prints the key source, the masked key, the credit pack, the ledger directory, and the profile path.
 
 ## HTTP deployment
 
@@ -355,7 +359,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, holds at most 128 requests at once, gives each request a 300 second deadline, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
 
 ## Security
 

@@ -9,6 +9,7 @@
     )
 )]
 
+use std::io::IsTerminal;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -17,6 +18,7 @@ mod audit;
 mod cli;
 mod config;
 mod doctor;
+mod output;
 mod serve;
 
 fn main() -> ExitCode {
@@ -25,6 +27,13 @@ fn main() -> ExitCode {
     let parsed = cli::Cli::parse();
     match run(parsed) {
         Ok(()) => ExitCode::SUCCESS,
+        Err(error)
+            if error
+                .downcast_ref::<output::PrintError>()
+                .is_some_and(output::PrintError::is_broken_pipe) =>
+        {
+            ExitCode::SUCCESS
+        }
         Err(error) => {
             eprintln!("ownserp: {error:#}");
             ExitCode::FAILURE
@@ -51,9 +60,11 @@ fn init_tracing() {
             .json()
             .init();
     } else {
+        let ansi = std::io::stderr().is_terminal() && std::env::var_os("NO_COLOR").is_none();
         tracing_subscriber::fmt()
             .with_env_filter(filter)
             .with_writer(std::io::stderr)
+            .with_ansi(ansi)
             .init();
     }
 }

@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use governor::clock::DefaultClock;
 use governor::state::{InMemoryState, NotKeyed};
@@ -169,14 +169,17 @@ impl SerperClient {
             match sent {
                 Ok(response) => {
                     if retryable_status(response.status().as_u16()) && attempt < MAX_ATTEMPTS {
-                        tokio::time::sleep(backoff(attempt)).await;
+                        pause(attempt, cancellation).await?;
                         continue;
                     }
-                    return read_response(response).await;
+                    return tokio::select! {
+                        result = read_response(response) => result,
+                        () = cancellation.cancelled() => Err(Error::Cancelled),
+                    };
                 }
                 Err(error) => {
                     if attempt < MAX_ATTEMPTS && retryable_error(&error) {
-                        tokio::time::sleep(backoff(attempt)).await;
+                        pause(attempt, cancellation).await?;
                         continue;
                     }
                     return Err(Error::network("calling Serper", error));
@@ -226,15 +229,22 @@ async fn wait_for_permit(
 
 fn backoff(attempt: u32) -> Duration {
     let step = BASE_BACKOFF_MS.saturating_mul(1u64 << attempt.saturating_sub(1).min(4));
-    let jitter = jitter_seed() % 100;
-    Duration::from_millis(step.saturating_add(jitter))
+    Duration::from_millis(step.saturating_add(jitter_ms()))
 }
 
-fn jitter_seed() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|value| u64::from(value.subsec_nanos()))
-        .unwrap_or(0)
+async fn pause(attempt: u32, cancellation: &CancellationToken) -> Result<()> {
+    tokio::select! {
+        () = tokio::time::sleep(backoff(attempt)) => Ok(()),
+        () = cancellation.cancelled() => Err(Error::Cancelled),
+    }
+}
+
+fn jitter_ms() -> u64 {
+    let mut bytes = [0u8; 2];
+    match getrandom::fill(&mut bytes) {
+        Ok(()) => u64::from(u16::from_ne_bytes(bytes)) % 250,
+        Err(_) => 0,
+    }
 }
 
 async fn read_response(response: Response) -> Result<Value> {
@@ -331,5 +341,15 @@ mod tests {
         assert!(first >= 250);
         assert!(third >= 1000);
         assert!(backoff(10).as_millis() < 5_000);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_backoff_returns_at_once() {
+        let cancellation = CancellationToken::new();
+        cancellation.cancel();
+        let started = std::time::Instant::now();
+        let outcome = pause(5, &cancellation).await;
+        assert!(matches!(outcome, Err(Error::Cancelled)));
+        assert!(started.elapsed() < Duration::from_secs(1));
     }
 }

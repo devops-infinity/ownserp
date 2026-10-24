@@ -1,9 +1,10 @@
-use std::io::BufRead;
+use std::io::{BufRead, IsTerminal, Read};
 
 use anyhow::{Context, bail};
 use ownserp_core::{Overrides, SecretString, Settings, keychain_delete, keychain_set};
 
 use crate::cli::{ConfigAction, ConfigArgs};
+use crate::output::emit;
 
 pub(crate) fn run(args: ConfigArgs) -> anyhow::Result<()> {
     match args.action {
@@ -11,33 +12,50 @@ pub(crate) fn run(args: ConfigArgs) -> anyhow::Result<()> {
         ConfigAction::Show => show(),
         ConfigAction::DeleteApiKey => {
             keychain_delete().context("removing the key")?;
-            println!("stored key removed; the environment variable is untouched");
+            emit("stored key removed; the environment variable is untouched")?;
             Ok(())
         }
     }
 }
 
 fn set_key() -> anyhow::Result<()> {
+    if std::io::stdin().is_terminal() {
+        bail!(
+            "stdin is a terminal and a typed key would be echoed; pipe the key instead, for example: printf '%s\\n' \"$SERPER_API_KEY\" | ownserp config set-api-key"
+        );
+    }
     eprintln!("reading the API key from stdin");
     let mut line = String::new();
     std::io::stdin()
         .lock()
+        .take(4096)
         .read_line(&mut line)
         .context("reading stdin")?;
-    let trimmed = line.trim();
+    let trimmed = clean_key(&line)?;
+    let secret = SecretString::from(trimmed);
+    keychain_set(&secret).context("storing the key in the OS keychain")?;
+    emit("stored the key in the OS keychain")?;
+    Ok(())
+}
+
+fn clean_key(raw: &str) -> anyhow::Result<String> {
+    let trimmed = raw.trim();
     if trimmed.is_empty() {
         bail!("no key on stdin");
     }
-    let secret = SecretString::from(trimmed.to_owned());
-    keychain_set(&secret).context("storing the key in the OS keychain")?;
-    println!("stored the key in the OS keychain");
-    Ok(())
+    if trimmed.chars().count() > 512 {
+        bail!("the key is longer than 512 characters");
+    }
+    if trimmed.chars().any(char::is_control) {
+        bail!("the key contains a control character");
+    }
+    Ok(trimmed.to_owned())
 }
 
 fn show() -> anyhow::Result<()> {
     let settings = Settings::load(Overrides::default()).context("resolving settings")?;
     for line in summary(&settings) {
-        println!("{line}");
+        emit(&line)?;
     }
     Ok(())
 }
@@ -65,9 +83,11 @@ mod tests {
 
     fn settings_with_key() -> Settings {
         let map = BTreeMap::from([("SERPER_API_KEY".to_owned(), "abcdefgh-test-key".to_owned())]);
+        let profile = std::env::temp_dir().join("ownserp-config-summary.toml");
+        std::fs::write(&profile, "").expect("profile");
         Settings::load_with(
             Overrides {
-                profile: Some(std::env::temp_dir().join("ownserp-config-summary.toml")),
+                profile: Some(profile),
                 ledger_dir: Some(std::env::temp_dir().join("ownserp-config-summary-ledger")),
                 cache_ttl_secs: Some(0),
                 ..Overrides::default()
@@ -75,6 +95,14 @@ mod tests {
             |name| map.get(name).cloned(),
         )
         .expect("settings")
+    }
+
+    #[test]
+    fn a_key_line_is_trimmed_and_bounded() {
+        assert_eq!(clean_key("  abc123  \n").expect("key"), "abc123");
+        assert!(clean_key("   ").is_err());
+        assert!(clean_key(&"a".repeat(513)).is_err());
+        assert!(clean_key("abc\u{7}").is_err());
     }
 
     #[test]

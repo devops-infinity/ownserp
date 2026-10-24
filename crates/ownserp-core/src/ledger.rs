@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
 use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -78,6 +79,7 @@ struct LedgerState {
 #[derive(Clone)]
 pub struct Ledger {
     state: Arc<Mutex<LedgerState>>,
+    healthy: Arc<AtomicBool>,
 }
 
 pub struct Reservation {
@@ -104,7 +106,7 @@ impl Ledger {
                 builder.mode(0o700);
             }
             builder.create(parent)?;
-            if !existed {
+            if !existed || parent.starts_with(crate::config::default_data_dir()) {
                 lock_down_dir(parent)?;
             }
         }
@@ -156,6 +158,7 @@ impl Ledger {
             ))
         })?;
         lock_down_file(&path)?;
+        sync_parent_dir(&path);
         let stored = file.metadata()?.len();
         if stored > valid_len {
             file.set_len(valid_len)?;
@@ -174,10 +177,19 @@ impl Ledger {
                 totals,
                 pending: 0,
             })),
+            healthy: Arc::new(AtomicBool::new(true)),
         })
     }
 
     pub fn append(&self, record: CallRecord) -> Result<LedgerRow> {
+        let outcome = self.append_inner(record);
+        if outcome.is_err() {
+            self.healthy.store(false, Ordering::Relaxed);
+        }
+        outcome
+    }
+
+    fn append_inner(&self, record: CallRecord) -> Result<LedgerRow> {
         let mut state = self.lock()?;
         let row = LedgerRow {
             seq: state.seq.saturating_add(1),
@@ -219,6 +231,11 @@ impl Ledger {
     }
 
     pub fn reserve(&self, credits: u32, budget: u64) -> Result<Reservation> {
+        if !self.healthy.load(Ordering::Relaxed) {
+            return Err(Error::Ledger(
+                "the ledger could not record the last call; restore the ledger directory and restart".into(),
+            ));
+        }
         let mut state = self.lock()?;
         let committed = state.totals.credits.saturating_add(state.pending);
         if committed.saturating_add(u64::from(credits)) > budget {
@@ -243,6 +260,11 @@ impl Ledger {
     pub fn totals(&self) -> Result<Totals> {
         let state = self.lock()?;
         Ok(state.totals.clone())
+    }
+
+    pub fn pending(&self) -> Result<u64> {
+        let state = self.lock()?;
+        Ok(state.pending)
     }
 
     pub fn path(&self) -> Result<PathBuf> {
@@ -374,11 +396,16 @@ where
             continue;
         }
         match serde_json::from_str::<LedgerRow>(&text) {
-            Ok(row) => {
+            Ok(row) if terminated => {
                 visit(&row)?;
-                if terminated {
-                    valid_len = consumed;
-                }
+                valid_len = consumed;
+            }
+            Ok(_) => {
+                tracing::warn!(
+                    path = %path.display(),
+                    "ignoring an unterminated final ledger line left by an interrupted write"
+                );
+                break;
             }
             Err(error) => {
                 if !terminated {
@@ -394,6 +421,19 @@ where
         }
     }
     Ok(valid_len)
+}
+
+fn sync_parent_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent()
+            && let Ok(handle) = File::open(parent)
+        {
+            let _ = handle.sync_all();
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = path;
 }
 
 #[cfg(unix)]
@@ -520,6 +560,21 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_append_blocks_further_reservations() {
+        let path = temp_path("unhealthy");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::open(&path).expect("ledger");
+        let mut broken = record();
+        broken.tool = "a".repeat(MAX_LINE_BYTES + 1);
+        assert!(ledger.append(broken).is_err());
+        assert!(
+            ledger.reserve(1, 100).is_err(),
+            "a ledger that cannot record must refuse a new reservation"
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn a_reservation_holds_the_budget_until_it_drops() {
         let path = temp_path("reserve");
         let _ = std::fs::remove_file(&path);
@@ -591,6 +646,28 @@ mod tests {
             "a symbolic link must be refused"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_unterminated_valid_final_row_is_not_chained() {
+        let path = temp_path("unterminated");
+        let _ = std::fs::remove_file(&path);
+        {
+            let ledger = Ledger::open(&path).expect("ledger");
+            ledger.append(record()).expect("first");
+            ledger.append(record()).expect("second");
+        }
+        let bytes = std::fs::read(&path).expect("read");
+        let trimmed = bytes.strip_suffix(b"\n").expect("newline");
+        std::fs::write(&path, trimmed).expect("drop the final newline");
+
+        let ledger = Ledger::open(&path).expect("reopen past an unterminated row");
+        assert_eq!(ledger.totals().expect("totals").calls, 1);
+        ledger.append(record()).expect("append after repair");
+        drop(ledger);
+
+        assert_eq!(verify(&path).expect("chain still valid"), 2);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

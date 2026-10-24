@@ -19,6 +19,7 @@ const ALLOWED_HOSTS = new Set([
 ]);
 const REQUEST_TIMEOUT_MS = 30000;
 const MAX_ARCHIVE_BYTES = 64 * 1024 * 1024;
+const TAR = fs.existsSync("/bin/tar") ? "/bin/tar" : "tar";
 const CACHE_ROOT = path.join(
   process.env.OWN_SERPER_CACHE_DIR ||
     path.join(process.env.XDG_CACHE_HOME || path.join(os.homedir(), ".cache"), "ownserp"),
@@ -108,9 +109,24 @@ async function fetchArchive(destination) {
   throw lastError;
 }
 
+function safeLocal(target, directory) {
+  if (process.platform === "win32" || !process.getuid) {
+    return true;
+  }
+  try {
+    const stat = fs.lstatSync(target);
+    if (directory ? !stat.isDirectory() : !stat.isFile()) {
+      return false;
+    }
+    return stat.uid === process.getuid() && (stat.mode & 0o022) === 0;
+  } catch {
+    return false;
+  }
+}
+
 function verified() {
   try {
-    if (!fs.existsSync(BINARY)) {
+    if (!fs.existsSync(BINARY) || !safeLocal(BINARY, false) || !safeLocal(STAMP, false)) {
       return false;
     }
     const stamped = fs.readFileSync(STAMP, "utf8").trim();
@@ -132,7 +148,11 @@ function pruneOldVersions() {
     return;
   }
   for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name === VERSION) {
+    if (
+      !entry.isDirectory() ||
+      entry.name === VERSION ||
+      !/^\d+\.\d+\.\d+$/.test(entry.name)
+    ) {
       continue;
     }
     const directory = path.join(CACHE_ROOT, entry.name);
@@ -152,7 +172,12 @@ async function ensureBinary() {
   if (verified()) {
     return;
   }
-  fs.mkdirSync(CACHE, { recursive: true });
+  fs.mkdirSync(CACHE, { recursive: true, mode: 0o700 });
+  if (!safeLocal(CACHE, true)) {
+    throw new Error(
+      `the cache directory ${CACHE} is writable by another user; remove it or set OWN_SERPER_CACHE_DIR to a private path`,
+    );
+  }
   const archive = path.join(CACHE, ASSET);
   await fetchArchive(archive);
   const actual = createHash("sha256").update(fs.readFileSync(archive)).digest("hex");
@@ -162,7 +187,7 @@ async function ensureBinary() {
   }
   const staging = fs.mkdtempSync(path.join(CACHE, ".extract-"));
   try {
-    execFileSync("tar", ["-xzf", archive, "-C", staging]);
+    execFileSync(TAR, ["-xzf", archive, "-C", staging, "--no-same-owner"]);
     const unpacked = path.join(staging, "ownserp");
     if (!fs.existsSync(unpacked)) {
       throw new Error("the archive did not contain the ownserp binary");

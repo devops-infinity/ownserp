@@ -32,8 +32,10 @@ Usage: tools/release.sh --prepare (--patch | --minor | --major | --version X.Y.Z
 
 Everything runs on this machine. Nothing is committed, pushed, or published.
 
-  --prepare        set the next version in Cargo.toml, Cargo.lock, server.json,
-                   and mcpb/manifest.json, and add the CHANGELOG heading.
+  --prepare        set the next version in Cargo.toml, the ownserp-core
+                   requirement, Cargo.lock, server.json, mcpb/manifest.json,
+                   the npm package and loader, the Dockerfile label, and the
+                   README install snippet, and add the CHANGELOG heading.
                    The diff is left in the working tree for review.
   --package        require a clean tree, run tools/verify.sh, build the release
                    binary, and write dist/ownserp-X.Y.Z-<target>.tar.gz with a
@@ -162,12 +164,11 @@ prepare() {
 	date="$(date +%F)"
 	say INFO "preparing $CURRENT -> $new"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would set the version in Cargo.toml, Cargo.lock, server.json, mcpb/manifest.json, and the npm package"
+		say INFO "dry run: would set the version in Cargo.toml, the ownserp-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the npm package and loader, the Dockerfile label, and the README install snippet"
 		say INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
 		return 0
 	fi
-	sed -i.bak "s/^version = \"$CURRENT\"$/version = \"$new\"/" Cargo.toml
-	rm -f Cargo.toml.bak
+	stamp_version "$REPO" "$CURRENT" "$new"
 	cargo metadata --format-version 1 >/dev/null
 	set_manifest_version server.json "$new"
 	set_manifest_version mcpb/manifest.json "$new"
@@ -197,16 +198,21 @@ package() {
 		return 0
 	fi
 	"$REPO/tools/verify.sh"
-	cargo build --release --locked --bin ownserp
+	cargo build --profile dist --locked --bin ownserp
 	mkdir -p "$DIST_DIR"
 	STAGE="$(mktemp -d)"
 	stage="$STAGE"
-	install -m 0755 target/release/ownserp "$stage/ownserp"
+	install -m 0755 target/dist/ownserp "$stage/ownserp"
 	cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE server.json "$stage/"
 	tar -czf "$archive" -C "$stage" .
-	sha256_of "$archive" >"$archive.sha256"
+	sha256_line_of "$archive" >"$archive.sha256"
 	say SUCCESS "wrote $archive"
 	say SUCCESS "wrote $archive.sha256"
+	local smoke="$stage/.smoke"
+	mkdir -p "$smoke"
+	tar -xzf "$archive" -C "$smoke"
+	"$smoke/ownserp" --version >/dev/null
+	say SUCCESS "the archive unpacks and its binary runs"
 	say INFO "tools/publish-npm.sh pins this digest into the npm loader before publishing"
 	if [[ "$MAKE_TAG" -eq 1 ]]; then
 		git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"

@@ -56,8 +56,31 @@ sha256_of() {
 	fi
 }
 
+sha256_line_of() {
+	local file="$1"
+	printf '%s  %s\n' "$(sha256_of "$file")" "$(basename "$file")"
+}
+
+stamp_version() {
+	local root="$1" from="$2" to="$3"
+	local manifest="$root/Cargo.toml"
+	[[ -f "$manifest" ]] || die "missing $manifest"
+	sed -i.bak "s/^version = \"$from\"$/version = \"$to\"/" "$manifest"
+	rm -f "$manifest.bak"
+	local dependency="$root/crates/ownserp/Cargo.toml"
+	if [[ -f "$dependency" ]]; then
+		sed -i.bak -E "s|(ownserp-core = \{ path = \"\.\./ownserp-core\", version = \")[0-9][0-9.]*(\" \})|\1$to\2|" "$dependency"
+		rm -f "$dependency.bak"
+	fi
+	local readme="$root/README.md"
+	if [[ -f "$readme" ]]; then
+		sed -i.bak -E "s|^VERSION=[0-9][0-9.]*$|VERSION=$to|" "$readme"
+		rm -f "$readme.bak"
+	fi
+}
+
 verify_version_stamps() {
-	local root="$1" want="$2" ok=0 file actual
+	local root="$1" want="$2" ok=0 file actual package
 	actual="$(workspace_version "$root")"
 	if [[ "$actual" != "$want" ]]; then
 		warn "Cargo.toml reports $actual"
@@ -78,6 +101,23 @@ verify_version_stamps() {
 	if [[ -f "$root/Dockerfile" ]] && ! grep -q "org.opencontainers.image.version=\"$want\"" "$root/Dockerfile"; then
 		warn "Dockerfile does not label $want"
 		ok=1
+	fi
+	local dependency="$root/crates/ownserp/Cargo.toml"
+	if [[ -f "$dependency" ]] && ! grep -qF "ownserp-core = { path = \"../ownserp-core\", version = \"$want\" }" "$dependency"; then
+		warn "crates/ownserp/Cargo.toml does not require ownserp-core $want"
+		ok=1
+	fi
+	if [[ -f "$root/README.md" ]] && ! grep -qF "VERSION=$want" "$root/README.md"; then
+		warn "README.md does not show VERSION=$want"
+		ok=1
+	fi
+	if [[ -f "$root/Cargo.lock" ]]; then
+		for package in ownserp ownserp-core; do
+			if ! grep -A1 -F "name = \"$package\"" "$root/Cargo.lock" | grep -qF "version = \"$want\""; then
+				warn "Cargo.lock does not report $want for $package"
+				ok=1
+			fi
+		done
 	fi
 	[[ "$ok" -eq 0 ]] || die "the version stamp did not reach every file for $want"
 }

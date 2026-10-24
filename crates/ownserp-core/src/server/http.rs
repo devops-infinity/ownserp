@@ -33,7 +33,8 @@ const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_ID: usize = 128;
 const MIN_TOKEN_CHARS: usize = 32;
 const MAX_CONCURRENT_REQUESTS: usize = 128;
-const REQUEST_TIMEOUT_SECS: u64 = 300;
+const REQUEST_TIMEOUT_SECS: u64 = 120;
+const SHUTDOWN_GRACE_SECS: u64 = 10;
 
 type HttpLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
@@ -80,11 +81,13 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
             Arc::from("no Serper API key; search tools will refuse until one is set"),
         )
     };
-    let allowed_hosts = allowed_hosts(&bind);
+    let allowed_hosts = allowed_hosts(&bind, settings.allowed_hosts());
     let handler = OwnserpHandler::new(settings)?;
     let metrics = handler.metrics();
     let mut config = StreamableHttpServerConfig::default();
     config.json_response = true;
+    config.legacy_session_mode = false;
+    config = config.enforce_origin_validation();
     config.max_request_body_bytes = MAX_BODY_BYTES;
     config.allowed_hosts = allowed_hosts.clone();
     let service = StreamableHttpService::new(
@@ -110,11 +113,11 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), gate_requests))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            require_bearer,
+            limit_requests,
         ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            limit_requests,
+            require_bearer,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), require_host))
         .layer(middleware::from_fn_with_state(
@@ -139,10 +142,48 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
             "{bind} resolved to a non-loopback address; set OWN_SERPER_BEARER_TOKENS before serving beyond this machine"
         )));
     }
-    axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .map_err(|error| Error::Config(format!("http server: {error}")))
+    if !tokens_configured {
+        tracing::warn!(
+            bind = %bind,
+            "serving HTTP without a bearer token; anything that can reach this port, including a tunnel or proxy, can spend credits"
+        );
+    }
+    let (stop_tx, mut stop_rx) = tokio::sync::watch::channel(false);
+    let server = axum::serve(listener, app).with_graceful_shutdown(async move {
+        let _ = stop_rx.changed().await;
+    });
+    let mut handle = tokio::spawn(async move { server.await });
+    tokio::select! {
+        result = &mut handle => http_result(result),
+        () = shutdown_signal() => {
+            let _ = stop_tx.send(true);
+            match tokio::time::timeout(
+                std::time::Duration::from_secs(SHUTDOWN_GRACE_SECS),
+                &mut handle,
+            )
+            .await
+            {
+                Ok(result) => http_result(result),
+                Err(_) => {
+                    tracing::warn!(
+                        grace_secs = SHUTDOWN_GRACE_SECS,
+                        "shutdown grace period elapsed with requests still open"
+                    );
+                    Ok(())
+                }
+            }
+        }
+    }
+}
+
+fn http_result(
+    result: std::result::Result<std::io::Result<()>, tokio::task::JoinError>,
+) -> Result<()> {
+    match result {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(Error::Config(format!("http server: {error}"))),
+        Err(error) => Err(Error::Config(format!("http server task: {error}"))),
+    }
 }
 
 async fn security_headers(request: Request, next: Next) -> Response {
@@ -263,16 +304,32 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
         .get(axum::http::header::HOST)
         .and_then(|value| value.to_str().ok());
     let accepted = host.is_some_and(|host| {
-        let bare = host.split(':').next().unwrap_or(host);
-        state.allowed_hosts.iter().any(|allowed| {
-            let allowed_bare = allowed.split(':').next().unwrap_or(allowed);
-            host == allowed || bare == allowed_bare
-        })
+        state
+            .allowed_hosts
+            .iter()
+            .any(|allowed| host == allowed || bare_host(host) == bare_host(allowed))
     });
     if accepted {
         next.run(request).await
     } else {
         (StatusCode::FORBIDDEN, "host not allowed").into_response()
+    }
+}
+
+fn bare_host(value: &str) -> &str {
+    if let Some(rest) = value.strip_prefix('[') {
+        return rest.split(']').next().unwrap_or(rest);
+    }
+    match value.rsplit_once(':') {
+        Some((head, port))
+            if !head.is_empty()
+                && !head.contains(':')
+                && !port.is_empty()
+                && port.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            head
+        }
+        _ => value,
     }
 }
 
@@ -294,7 +351,12 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
     if accepted {
         next.run(request).await
     } else {
-        (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
+        (
+            StatusCode::UNAUTHORIZED,
+            [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
+            "unauthorized",
+        )
+            .into_response()
     }
 }
 
@@ -335,20 +397,22 @@ fn is_loopback(bind: &str) -> bool {
     matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]")
 }
 
-fn allowed_hosts(bind: &str) -> Vec<String> {
-    if let Ok(raw) = std::env::var("OWN_SERPER_ALLOWED_HOSTS") {
-        let hosts: Vec<String> = raw
-            .split(',')
-            .map(str::trim)
-            .filter(|host| !host.is_empty())
-            .map(ToOwned::to_owned)
-            .collect();
-        if !hosts.is_empty() {
-            return hosts;
-        }
+fn allowed_hosts(bind: &str, configured: Option<&[String]>) -> Vec<String> {
+    if let Some(hosts) = configured
+        && !hosts.is_empty()
+    {
+        return hosts.to_vec();
     }
     let host = host_of(bind);
-    vec![host.clone(), bind.to_owned(), format!("{host}:443")]
+    let mut hosts = vec![host.clone(), bind.to_owned(), format!("{host}:443")];
+    if is_loopback(bind) {
+        for alias in ["localhost", "127.0.0.1", "::1"] {
+            if !hosts.iter().any(|entry| entry == alias) {
+                hosts.push(alias.to_owned());
+            }
+        }
+    }
+    hosts
 }
 
 fn host_of(bind: &str) -> String {
@@ -418,6 +482,13 @@ mod tests {
         let router = app(state(&["secret"], None));
         let denied = router.clone().oneshot(probe()).await.expect("response");
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            denied
+                .headers()
+                .get(axum::http::header::WWW_AUTHENTICATE)
+                .and_then(|value| value.to_str().ok()),
+            Some("Bearer")
+        );
 
         let request = HttpRequest::builder()
             .uri("/probe")
@@ -486,5 +557,40 @@ mod tests {
         assert!(!valid_request_id(""));
         assert!(!valid_request_id("has space"));
         assert!(!valid_request_id(&"a".repeat(MAX_REQUEST_ID + 1)));
+    }
+
+    #[test]
+    fn the_host_split_keeps_ipv6_and_drops_only_a_real_port() {
+        assert_eq!(bare_host("127.0.0.1:8777"), "127.0.0.1");
+        assert_eq!(bare_host("example.org:443"), "example.org");
+        assert_eq!(bare_host("::1"), "::1");
+        assert_eq!(bare_host("[::1]:8777"), "::1");
+        assert_eq!(bare_host(":443"), ":443");
+        assert_eq!(bare_host("example.org"), "example.org");
+    }
+
+    #[test]
+    fn a_loopback_bind_accepts_every_loopback_spelling() {
+        let hosts = allowed_hosts("127.0.0.1:8777", None);
+        assert!(hosts.iter().any(|host| host == "localhost"));
+        assert!(hosts.iter().any(|host| host == "127.0.0.1"));
+        assert!(hosts.iter().any(|host| host == "::1"));
+    }
+
+    #[tokio::test]
+    async fn a_bare_colon_host_does_not_pass_the_ipv6_allowlist() {
+        let mut state = state(&[], None);
+        state.allowed_hosts = Arc::new(vec!["::1".to_owned()]);
+        let router = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(middleware::from_fn_with_state(state.clone(), require_host))
+            .with_state(state);
+        let request = HttpRequest::builder()
+            .uri("/probe")
+            .header(axum::http::header::HOST, ":443")
+            .body(Body::empty())
+            .expect("request");
+        let response = router.oneshot(request).await.expect("response");
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
     }
 }

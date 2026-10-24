@@ -34,7 +34,7 @@ Search results, snippets, and scraped pages can carry text aimed at the model. A
 
 ### Key disclosure
 
-Control: query text is never written, and the stored arguments hash is an HMAC keyed by a per-install `args.key` file outside the ledger directory, so the ledger alone cannot confirm a guessed query. The key lives in `secrecy::SecretString`, is masked in every display, is never accepted as a command line argument, is never written to the profile or any file the server writes, and is never attached to a URL. Request logs carry the tool, credits, and status, never the body or the header. The ledger stores an arguments hash, not the query. Residual risk: a crash dump outside the server's control, and the client's own config file if the operator puts the key there.
+Control: query text is never written, and the stored arguments hash is an HMAC keyed by a per-install `args.key` file outside the ledger directory, so the ledger alone cannot confirm a guessed query. The key lives in `secrecy::SecretString`, is masked in every display, is never accepted as a command line argument, is never written to the profile or any file the server writes, and is never attached to a URL. Request logs carry the tool, credits, and status, never the body or the header. The MCP SDK prints full JSON-RPC messages at trace level, so query text reaches stderr only when the operator sets `RUST_LOG` to trace. The ledger stores an arguments hash, not the query. Residual risk: a crash dump outside the server's control, and the client's own config file if the operator puts the key there.
 
 ### Credit burn
 
@@ -42,7 +42,7 @@ Control: every tool description states its cost, every result carries a cost obj
 
 ### Unauthorized HTTP clients
 
-Control: the server refuses a non-loopback bind without at least one bearer token, refuses a token shorter than 32 characters, compares tokens in constant time, and validates the Host header on every protected route, metrics and readiness included. Residual risk: an operator who exposes the port through a proxy without TLS. The proxy and TLS are deployment duties, and the docs say so.
+Control: the server refuses a non-loopback bind without at least one bearer token, refuses a token shorter than 32 characters, compares tokens in constant time, validates the Host header on every protected route, metrics and readiness included, rejects a request that carries an Origin header, and logs a warning at startup whenever HTTP runs without a token. Residual risk: a loopback bind reached through a tunnel or a proxy is reachable by anyone that tunnel admits, and the loopback check cannot see the tunnel. An operator who exposes the port through a proxy without TLS adds a second risk. The tunnel's access control, the proxy, and the TLS are deployment duties, and the docs say so.
 
 ### Request flooding
 
