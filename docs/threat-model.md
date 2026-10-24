@@ -46,7 +46,7 @@ Control: the server refuses a non-loopback bind without at least one bearer toke
 
 ### Request flooding
 
-Control: optional global inbound rate limit (`OWN_SERPER_HTTP_QPS`), a 1 MiB body limit enforced by the transport that reads the body, a 30 second body arrival deadline, a 30 second upstream timeout, and a 4 MiB cap on any upstream body. Each retry attempt waits on the local QPS limiter again, so a retry cannot outrun the ceiling. Residual risk: the inbound limit is off by default, and it is global rather than per client.
+Control: optional global inbound rate limit (`OWN_SERPER_HTTP_QPS`), a 1 MiB body limit enforced by the transport that reads the body, a 30 second body arrival deadline, a 30 second upstream timeout, and a 4 MiB cap on any upstream body. Each retry attempt waits on the local QPS limiter again, so a retry cannot outrun the ceiling. Residual risk: the inbound limit is off by default, and it is global rather than per client. A peer that can reach the port can also open the 256 connections the server allows and send nothing, because no header-read or idle timeout is enforced: axum 0.8.9 builds its own hyper-util connection builder and exposes no hook to set one. Reaching it means serving through a hand-written hyper-util accept loop, which is a change to the HTTP entry point rather than a setting.
 
 ### Ledger tampering or loss
 
