@@ -9,7 +9,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const VERSION = "0.1.5";
-const DIGEST = "7da61611def9c718a167fd86a7ef955960c042a3fcc9dd1b67749577c55e7193";
+const DIGEST = "a49a2706f7debeb53469a7ba411e6f8aef9e11a52e38038df6bc8106e7f0d11e";
 const ASSET = `ownserp-${VERSION}-x86_64-unknown-linux-gnu.tar.gz`;
 const BASE = `https://github.com/devops-infinity/ownserp/releases/download/v${VERSION}`;
 const ALLOWED_HOSTS = new Set([
