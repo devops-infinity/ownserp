@@ -49,6 +49,13 @@ if [[ -n "$(git status --porcelain)" ]]; then
 fi
 npm whoami >/dev/null 2>&1 || die "npm is not authenticated; run tools/npm-auth-setup.sh first"
 
+MCP_NAME="io.github.devops-infinity/ownserp"
+jq --arg mcpName "$MCP_NAME" 'if .mcpName == $mcpName then . else .mcpName = $mcpName end' \
+	"$PACKAGE_DIR/package.json" >"$PACKAGE_DIR/package.json.tmp"
+mv "$PACKAGE_DIR/package.json.tmp" "$PACKAGE_DIR/package.json"
+jq -e --arg mcpName "$MCP_NAME" '.mcpName == $mcpName' "$PACKAGE_DIR/package.json" >/dev/null ||
+	die "could not set mcpName in the generated package"
+
 if [[ "$DRY_RUN" -eq 1 ]]; then
 	(cd "$PACKAGE_DIR" && npm pack --dry-run)
 	exit 0

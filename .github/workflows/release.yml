@@ -134,7 +134,8 @@ jobs:
           cp mcpb/manifest.json "$TMP/manifest.json"
           tar -xzf "dist/ownserp-x86_64-unknown-linux-gnu.tar.gz" -C "$TMP"
           install -m 0755 "$TMP/ownserp-x86_64-unknown-linux-gnu/ownserp" "$TMP/server/ownserp"
-          (cd "$TMP" && zip -qr "$GITHUB_WORKSPACE/dist/ownserp-$VERSION.mcpb" manifest.json server)
+          find "$TMP" -exec touch -t 198001010000 {} +
+          (cd "$TMP" && zip -qXr "$GITHUB_WORKSPACE/dist/ownserp-$VERSION.mcpb" manifest.json server)
           HASH="$(sha256sum "dist/ownserp-$VERSION.mcpb" | awk '{print $1}')"
           printf '%s  %s\n' "$HASH" "ownserp-$VERSION.mcpb" > "dist/ownserp-$VERSION.mcpb.sha256"
 
