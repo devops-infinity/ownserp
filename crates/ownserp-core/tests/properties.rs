@@ -116,3 +116,37 @@ fn rotation_refuses_when_there_is_no_ledger() {
     let _ = std::fs::remove_file(&path);
     assert!(ownserp_core::rotate(&path).is_err());
 }
+
+#[test]
+fn sanitize_strips_every_added_format_range() {
+    let samples = [
+        '\u{1BCA0}',
+        '\u{1BCA3}',
+        '\u{13430}',
+        '\u{1343F}',
+        '\u{0600}',
+        '\u{0605}',
+        '\u{06DD}',
+        '\u{070F}',
+        '\u{0890}',
+        '\u{0891}',
+        '\u{08E2}',
+        '\u{110BD}',
+        '\u{110CD}',
+        '\u{FFF0}',
+        '\u{FFF8}',
+        '\u{E0080}',
+        '\u{E00FF}',
+        '\u{E01F0}',
+        '\u{E0FFF}',
+    ];
+    for sample in samples {
+        let text = format!("ign{sample}ore");
+        let cleaned = sanitize(&text);
+        assert!(
+            !cleaned.contains(sample),
+            "U+{:04X} survived sanitizing: {cleaned:?}",
+            sample as u32
+        );
+    }
+}

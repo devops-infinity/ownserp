@@ -12,6 +12,7 @@ struct Entry {
     body: Arc<Value>,
     stored_at: Instant,
     bytes: usize,
+    generation: u64,
 }
 
 pub struct ResponseCache {
@@ -22,8 +23,9 @@ pub struct ResponseCache {
 
 struct CacheState {
     entries: HashMap<String, Entry>,
-    order: VecDeque<String>,
+    order: VecDeque<(String, u64)>,
     bytes: usize,
+    next_generation: u64,
 }
 
 impl ResponseCache {
@@ -33,6 +35,7 @@ impl ResponseCache {
                 entries: HashMap::new(),
                 order: VecDeque::new(),
                 bytes: 0,
+                next_generation: 0,
             }),
             ttl: Duration::from_secs(ttl_secs),
             max_bytes,
@@ -64,7 +67,6 @@ impl ResponseCache {
             if let Some(removed) = removed {
                 state.bytes = state.bytes.saturating_sub(removed.bytes);
             }
-            state.order.retain(|item| item != key);
             return Ok(None);
         }
         Ok(Some((Arc::clone(&entry.body), age.as_secs())))
@@ -96,23 +98,30 @@ impl ResponseCache {
         let mut state = self.lock();
         if let Some(replaced) = state.entries.remove(&key) {
             state.bytes = state.bytes.saturating_sub(replaced.bytes);
-            state.order.retain(|item| item != &key);
         }
         state.bytes = state.bytes.saturating_add(bytes);
-        state.order.push_back(key.clone());
+        state.next_generation = state.next_generation.saturating_add(1);
+        let generation = state.next_generation;
+        state.order.push_back((key.clone(), generation));
         state.entries.insert(
             key,
             Entry {
                 body,
                 stored_at: Instant::now(),
                 bytes,
+                generation,
             },
         );
         while state.bytes > self.max_bytes {
-            let Some(oldest) = state.order.pop_front() else {
+            let Some((oldest, stamp)) = state.order.pop_front() else {
                 break;
             };
-            if let Some(removed) = state.entries.remove(&oldest) {
+            if state
+                .entries
+                .get(&oldest)
+                .is_some_and(|entry| entry.generation == stamp)
+                && let Some(removed) = state.entries.remove(&oldest)
+            {
                 state.bytes = state.bytes.saturating_sub(removed.bytes);
             }
         }

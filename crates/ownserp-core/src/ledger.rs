@@ -1039,6 +1039,15 @@ mod tests {
         dir.join("calls.jsonl")
     }
 
+    fn clean(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        if let Some(parent) = path.parent()
+            && parent != std::env::temp_dir()
+        {
+            let _ = std::fs::remove_dir(parent);
+        }
+    }
+
     fn record() -> CallRecord {
         CallRecord {
             tool: "serper_search".to_owned(),
@@ -1070,7 +1079,7 @@ mod tests {
         let second = Ledger::open(&path).expect("second handle");
         assert_eq!(second.totals().expect("totals").calls, 0);
         drop((first, second));
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1089,7 +1098,7 @@ mod tests {
         assert_eq!(four.prev, three.hash);
         drop((first, second));
         assert_eq!(verify(&path).expect("chain verifies"), 4);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1104,7 +1113,7 @@ mod tests {
         assert_eq!(first.totals().expect("first totals").calls, 3);
         assert_eq!(second.totals().expect("second totals").calls, 3);
         drop((first, second));
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1122,7 +1131,7 @@ mod tests {
         );
         assert!(second.reserve(2, 10).is_ok(), "2 still fits a budget of 10");
         drop((first, second));
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1156,7 +1165,7 @@ mod tests {
             .collect();
         seqs.sort_unstable();
         assert_eq!(seqs, (1..=400).collect::<Vec<u64>>());
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1191,7 +1200,7 @@ mod tests {
         assert_eq!(state.catch_up(true).expect("catch up"), CatchUp::Replaced);
         drop(state);
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1220,7 +1229,7 @@ mod tests {
         );
         let _ = releaser.join();
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1238,7 +1247,7 @@ mod tests {
             first.totals().expect("totals").calls
         );
         drop((first, second));
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1269,7 +1278,7 @@ mod tests {
         let _ = holder.unlock();
         assert!(writer.join().expect("join").is_ok());
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1293,7 +1302,7 @@ mod tests {
             .join()
             .expect("join")
             .expect("the open succeeds once the holder releases");
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1328,7 +1337,7 @@ mod tests {
             "the wait must not hang: {elapsed:?}"
         );
         holder.unlock().expect("unlock");
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1350,7 +1359,7 @@ mod tests {
             ledger.reserve(1, 100).is_ok(),
             "a busy lock must not latch the ledger as broken"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1381,7 +1390,7 @@ mod tests {
             outcome.is_err(),
             "a rotate must not move a file it no longer owns"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1412,7 +1421,7 @@ mod tests {
         let _ = holder.unlock();
         assert!(writer.join().expect("join").is_ok());
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1434,7 +1443,7 @@ mod tests {
             "a call that is already in the chain must not still hold a credit"
         );
         drop((first, second));
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1451,7 +1460,7 @@ mod tests {
             5,
             "a foreign file must be left as it was"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1482,7 +1491,7 @@ mod tests {
             verify(&path).is_err(),
             "a partial final line must be reported, not skipped"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1521,7 +1530,7 @@ mod tests {
             verify(&path).is_err(),
             "a gap in the sequence must be refused"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1549,7 +1558,7 @@ mod tests {
             "the queued row keeps the time it was observed"
         );
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1570,7 +1579,7 @@ mod tests {
             "a queued credit is still going to be spent"
         );
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1588,7 +1597,7 @@ mod tests {
         let _ = holder.unlock();
         drop(ledger);
         assert_eq!(verify(&path).expect("the queue must be flushed on drop"), 1);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1603,7 +1612,7 @@ mod tests {
             "a reservation held in one process is invisible to the other"
         );
         drop((first, second));
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1629,7 +1638,7 @@ mod tests {
             "the partial line must be gone"
         );
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1644,7 +1653,7 @@ mod tests {
             ledger.reserve(1, 100).is_err(),
             "a ledger that cannot record must refuse a new reservation"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1659,7 +1668,7 @@ mod tests {
         );
         drop(held);
         assert!(ledger.reserve(6, 10).is_ok(), "the budget frees on drop");
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1689,7 +1698,7 @@ mod tests {
             Ledger::open(&path).is_err(),
             "an oversized line must be refused"
         );
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[cfg(unix)]
@@ -1710,7 +1719,7 @@ mod tests {
         assert_eq!(file_mode, 0o600);
         assert_eq!(dir_mode, 0o700);
         drop(ledger);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[cfg(unix)]
@@ -1750,7 +1759,7 @@ mod tests {
         drop(ledger);
 
         assert_eq!(verify(&path).expect("chain still valid"), 2);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 
     #[test]
@@ -1777,6 +1786,6 @@ mod tests {
         let ledger = Ledger::open(&path).expect("second reopen after a repaired tail");
         assert_eq!(ledger.totals().expect("totals").calls, 2);
         assert_eq!(verify(&path).expect("chain still valid"), 2);
-        let _ = std::fs::remove_file(&path);
+        clean(&path);
     }
 }

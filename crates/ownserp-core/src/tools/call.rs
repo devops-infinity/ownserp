@@ -855,6 +855,19 @@ async fn batch(
                     Some(crate::projection::cap(&error.to_string(), 300).0),
                 ),
             };
+            let error = error.or_else(|| {
+                query_response
+                    .get("message")
+                    .and_then(Value::as_str)
+                    .map(|message| {
+                        crate::projection::cap(&crate::projection::sanitize(message), 300).0
+                    })
+                    .or_else(|| {
+                        query_response
+                            .get("statusCode")
+                            .map(|code| format!("upstream answered {code}"))
+                    })
+            });
             BatchEntry {
                 query,
                 results,
