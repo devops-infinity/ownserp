@@ -696,6 +696,102 @@ async fn a_failed_call_charges_its_estimate() {
 }
 
 #[tokio::test]
+async fn a_rejected_call_charges_nothing() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(403).set_body_json(json!({"message": "bad key"})))
+        .mount(&server)
+        .await;
+    let ctx = context("rejected-charge", &server.uri(), 0);
+    let failed = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&arguments(json!({"q": "x"}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    assert_eq!(
+        error_code(&result_json(&failed)),
+        Some("serper.auth_failed")
+    );
+
+    let ledger = std::fs::read_to_string(ctx.ledger.path().expect("path")).expect("ledger");
+    assert!(
+        ledger.contains("\"credits_actual\":0"),
+        "a rejected call must be booked at zero: {ledger}"
+    );
+
+    let session = call_tool(
+        &ctx,
+        "serper_session",
+        Some(&arguments(json!({}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    let body = result_json(&session);
+    assert_eq!(
+        body.pointer("/structuredContent/credits")
+            .and_then(Value::as_u64),
+        Some(0),
+        "a rejected call must not spend credits"
+    );
+    assert_eq!(
+        body.pointer("/structuredContent/calls")
+            .and_then(Value::as_u64),
+        Some(1),
+        "the rejected call is still one recorded call"
+    );
+}
+
+#[tokio::test]
+async fn a_recorded_call_survives_a_ledger_lock() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "searchParameters": {"q": "x", "type": "search"},
+            "organic": [{"title": "t", "link": "l", "snippet": "s", "position": 1}],
+            "credits": 1
+        })))
+        .mount(&server)
+        .await;
+    let ctx = context("locked-ledger", &server.uri(), 0);
+    let path = ctx.ledger.path().expect("path");
+    let holder = std::fs::OpenOptions::new()
+        .read(true)
+        .append(true)
+        .open(&path)
+        .expect("holder");
+    holder.try_lock().expect("exclusive lock");
+    let releaser = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_secs(6));
+        let _ = holder.unlock();
+    });
+
+    let result = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&arguments(json!({"q": "x"}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    let value = result_json(&result);
+    assert_eq!(
+        error_code(&value),
+        None,
+        "a paid call must answer even when its row cannot be written"
+    );
+    assert_eq!(
+        value
+            .pointer("/structuredContent/cost/credits")
+            .and_then(Value::as_u64),
+        Some(1)
+    );
+    let _ = releaser.join();
+}
+
+#[tokio::test]
 async fn every_search_family_tool_projects_its_own_section() {
     let cases = vec![
         (

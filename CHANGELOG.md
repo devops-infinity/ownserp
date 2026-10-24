@@ -6,6 +6,12 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Fixed
+
+- A call that was paid for and written to the ledger no longer comes back as an error. The cost object reads the totals this process already holds, so a busy ledger can no longer fail a result whose row was written.
+- Ledger reads and budget reservations no longer run on the async thread, so a held ledger lock cannot stall the server's other requests while it waits.
+- A call that Serper rejects with a 4xx status, or answers with a rate limit, is now recorded at zero credits instead of the estimate, because nothing was billed.
+
 ## [1.3.0] - 2026-10-25
 
 ### Changed

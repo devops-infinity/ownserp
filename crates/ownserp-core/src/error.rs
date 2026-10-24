@@ -90,6 +90,14 @@ impl Error {
         }
     }
 
+    pub fn is_unbilled(&self) -> bool {
+        match self {
+            Self::Upstream { status, .. } => (400..500).contains(status),
+            Self::RateLimited { .. } => true,
+            _ => false,
+        }
+    }
+
     pub const fn remedy(&self) -> &'static str {
         match self {
             Self::MissingApiKey => {
@@ -266,5 +274,49 @@ mod tests {
             Some("serper.budget_refused")
         );
         assert!(body.get("remedy").and_then(Value::as_str).is_some());
+    }
+
+    #[test]
+    fn a_rejected_or_rate_limited_error_is_unbilled() {
+        for status in [400, 401, 403, 404, 429] {
+            let error = Error::Upstream {
+                status,
+                message: String::new(),
+            };
+            assert!(
+                error.is_unbilled(),
+                "status {status} must count as unbilled"
+            );
+        }
+        let limited = Error::RateLimited {
+            message: String::new(),
+        };
+        assert!(limited.is_unbilled(), "a rate limit must count as unbilled");
+    }
+
+    #[test]
+    fn a_server_error_timeout_or_cancel_stays_billed() {
+        for status in [500, 502, 503] {
+            let error = Error::Upstream {
+                status,
+                message: String::new(),
+            };
+            assert!(!error.is_unbilled(), "status {status} may have been billed");
+        }
+        let network = Error::network("calling Serper", std::io::Error::other("timed out"));
+        assert!(!network.is_unbilled(), "a timeout may have been billed");
+        assert!(
+            !Error::Cancelled.is_unbilled(),
+            "a cancel may have been billed"
+        );
+        let json = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid json");
+        assert!(
+            !Error::from(json).is_unbilled(),
+            "a bad body may have been billed"
+        );
+        assert!(
+            !Error::Projection("shape".to_owned()).is_unbilled(),
+            "a projection failure follows a good response"
+        );
     }
 }

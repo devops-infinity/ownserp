@@ -287,7 +287,7 @@ async fn search_and_record(
     let (raw, cache_age) = match cached {
         Some((raw, age)) => (raw, Some(age)),
         None => {
-            _reservation = reserve_budget(ctx, credits)?;
+            _reservation = reserve_budget(ctx, credits).await?;
             let raw = match ctx.client.post(endpoint, &body, cancellation).await {
                 Ok(raw) => raw,
                 Err(error) => {
@@ -384,7 +384,7 @@ async fn search_and_record(
         },
     )
     .await;
-    let cost = cost_info(ctx, charged, cache_age)?;
+    let cost = cost_info(ctx, charged, cache_age);
     let mut fitted = fitted;
     set_cost(&mut fitted, &cost)?;
     let fitted = projection::fit_to_budget(fitted, projection::MAX_RESULT_BYTES);
@@ -647,7 +647,7 @@ async fn scrape(
 ) -> Result<CallToolResult> {
     let body = args.body()?;
     let credits = Endpoint::Scrape.base_cost().get();
-    let _reservation = reserve_budget(ctx, SCRAPE_MAX_CREDITS)?;
+    let _reservation = reserve_budget(ctx, SCRAPE_MAX_CREDITS).await?;
     let started = Instant::now();
     let raw = match ctx.client.post(Endpoint::Scrape, &body, cancellation).await {
         Ok(raw) => raw,
@@ -700,7 +700,7 @@ async fn scrape(
         },
     )
     .await;
-    let cost = cost_info(ctx, actual, None)?;
+    let cost = cost_info(ctx, actual, None);
     set_cost(&mut payload, &cost)?;
     let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
@@ -760,7 +760,7 @@ async fn locations(
         },
     )
     .await;
-    let cost = cost_info(ctx, 0, None)?;
+    let cost = cost_info(ctx, 0, None);
     set_cost(&mut envelope, &cost)?;
     let envelope = projection::fit_to_budget(envelope, projection::MAX_RESULT_BYTES);
     let text = projection::summary_text(result_count(&envelope), top.as_deref(), 0, Some(0.0));
@@ -785,7 +785,7 @@ async fn batch(
         .map(|query| endpoint.estimated_cost(query.num).get())
         .sum::<u32>()
         .saturating_mul(BATCH_MULTIPLIER);
-    let _reservation = reserve_budget(ctx, total)?;
+    let _reservation = reserve_budget(ctx, total).await?;
     let body = Value::Array(bodies);
     ctx.client
         .acquire_queries(args.queries.len(), cancellation)
@@ -881,7 +881,7 @@ async fn batch(
         },
     )
     .await;
-    let cost = cost_info(ctx, total, None)?;
+    let cost = cost_info(ctx, total, None);
     set_cost(&mut payload, &cost)?;
     let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
     let text = match args.text_mode() {
@@ -930,7 +930,7 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
     let output = HealthOutput {
         status: status.clone(),
         info: service_info,
-        cost: cost_info(ctx, 0, None)?,
+        cost: cost_info(ctx, 0, None),
     };
     let payload = serde_json::to_value(&output)?;
     let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
@@ -939,8 +939,32 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
 }
 
 async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallToolResult> {
-    let totals = ctx.ledger.totals()?;
-    let pending = ctx.ledger.pending()?;
+    let ledger = ctx.ledger.clone();
+    let (totals, pending) = match tokio::task::spawn_blocking(move || {
+        (ledger.totals(), ledger.pending())
+    })
+    .await
+    {
+        Ok((totals, pending)) => {
+            if let Err(error) = &totals {
+                tracing::warn!(
+                    %error,
+                    "the ledger totals could not be caught up; reporting the last known snapshot"
+                );
+            }
+            (
+                totals.unwrap_or_else(|_| ctx.ledger.snapshot()),
+                pending.unwrap_or(0),
+            )
+        }
+        Err(join_error) => {
+            tracing::warn!(
+                %join_error,
+                "the ledger task failed; reporting the last known snapshot"
+            );
+            (ctx.ledger.snapshot(), 0)
+        }
+    };
     let per_tool = totals
         .per_tool
         .iter()
@@ -989,7 +1013,7 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
     Ok(tool_result(payload, text))
 }
 
-fn reserve_budget(ctx: &ToolContext, credits: u32) -> Result<Option<Reservation>> {
+async fn reserve_budget(ctx: &ToolContext, credits: u32) -> Result<Option<Reservation>> {
     if let Some(ceiling) = ctx.settings.per_call_credit_ceiling()
         && credits > ceiling
     {
@@ -997,19 +1021,23 @@ fn reserve_budget(ctx: &ToolContext, credits: u32) -> Result<Option<Reservation>
             "{credits} credits is above the per-call ceiling of {ceiling}"
         )));
     }
-    match ctx.settings.session_budget_credits() {
-        Some(budget) => Ok(Some(ctx.ledger.reserve(credits, budget)?)),
-        None => Ok(None),
-    }
+    let Some(budget) = ctx.settings.session_budget_credits() else {
+        return Ok(None);
+    };
+    let ledger = ctx.ledger.clone();
+    let reservation = tokio::task::spawn_blocking(move || ledger.reserve(credits, budget))
+        .await
+        .map_err(|error| Error::Ledger(error.to_string()))??;
+    Ok(Some(reservation))
 }
 
 fn usd_text(usd: Option<f64>) -> String {
     usd.map_or_else(|| "usd unknown".to_owned(), |value| format!("${value:.6}"))
 }
 
-fn cost_info(ctx: &ToolContext, credits: u32, cache_age: Option<u64>) -> Result<CostInfo> {
-    let totals = ctx.ledger.totals()?;
-    Ok(CostInfo {
+fn cost_info(ctx: &ToolContext, credits: u32, cache_age: Option<u64>) -> CostInfo {
+    let totals = ctx.ledger.snapshot();
+    CostInfo {
         credits,
         usd: usd_for_call(credits, ctx.settings.pack(), ctx.settings.usd_per_1k()),
         session_credits: totals.credits,
@@ -1020,7 +1048,7 @@ fn cost_info(ctx: &ToolContext, credits: u32, cache_age: Option<u64>) -> Result<
         ),
         cache_hit: cache_age.map(|_| true),
         cached_age_secs: cache_age,
-    })
+    }
 }
 
 async fn append_call_record(ctx: &ToolContext, call_record: CallRecord) -> Result<()> {
@@ -1057,8 +1085,8 @@ async fn append_failure(
         endpoint: endpoint.to_owned(),
         args_hash: args_hash(ctx.hash_key.as_ref(), body),
         credits_estimated: credits,
-        // The request may have reached Serper, so charge the estimate rather than zero.
-        credits_actual: None,
+        // A rejected or rate-limited call was never billed; a timeout or 5xx may have been.
+        credits_actual: if error.is_unbilled() { Some(0) } else { None },
         batch_multiplier: 1,
         duration_ms: elapsed_ms(started),
         status: format!("error:{}", error.code()),
@@ -1107,6 +1135,54 @@ fn tool_result(structured: Value, text: String) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_held_ledger_lock_does_not_stall_the_async_thread() {
+        let dir = std::env::temp_dir().join(format!("ownserp-reserve-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let profile = dir.join("profile.toml");
+        std::fs::write(&profile, "session_budget_credits = 100\n").expect("profile");
+        let settings = Settings::load(crate::config::Overrides {
+            profile: Some(profile),
+            ledger_dir: Some(dir.clone()),
+            cache_ttl_secs: Some(0),
+            ..crate::config::Overrides::default()
+        })
+        .expect("settings");
+        let context = ToolContext::new(settings).expect("context");
+        let path = context.ledger.path().expect("path");
+        let holder = std::fs::OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            let _ = holder.unlock();
+        });
+
+        let ticks = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let counter = Arc::clone(&ticks);
+        let ticker = tokio::spawn(async move {
+            for _ in 0..40 {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+                counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
+
+        let reservation = reserve_budget(&context, 1).await.expect("reservation");
+        let observed = ticks.load(std::sync::atomic::Ordering::Relaxed);
+        assert!(reservation.is_some(), "a budget of 100 admits one credit");
+        assert!(
+            observed >= 5,
+            "the async thread stalled while the file lock was held: {observed} ticks"
+        );
+        ticker.abort();
+        let _ = releaser.join();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn concurrent_starts_agree_on_one_arguments_key() {
