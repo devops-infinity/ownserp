@@ -41,10 +41,11 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
   --package        require a clean tree, run tools/verify.sh, build the host
                    binary plus the aarch64, musl, and Windows targets, write
                    one archive and sha256 file per target, add shell
-                   completions, the manual page, and the MCPB bundle, and
-                   stamp the host archive digest into the npm loader. Commit
-                   that stamp before tagging. Needs cargo-zigbuild, zig, and
-                   zip.
+                   completions, the manual page, and the MCPB bundle, install
+                   the host binary into ~/.local/bin (override with
+                   OWN_SERPER_INSTALL_DIR), and stamp the host archive digest
+                   into the npm loader. Commit that stamp before tagging.
+                   Needs cargo-zigbuild, zig, and zip.
   --tag            require a clean tree and an archive whose digest the npm
                    loader already pins, then create vX.Y.Z at HEAD (signed
                    when user.signingkey is set); never pushed
@@ -264,6 +265,13 @@ package() {
 	tar -xzf "$archive" -C "$stage"
 	"$stage/ownserp" --version >/dev/null
 	say SUCCESS "the host archive unpacks and its binary runs"
+	local install_dir="${OWN_SERPER_INSTALL_DIR:-$HOME/.local/bin}"
+	if [[ "$host" != *windows* ]]; then
+		mkdir -p "$install_dir"
+		install -m 0755 target/dist/ownserp "$install_dir/.ownserp.new"
+		mv -f "$install_dir/.ownserp.new" "$install_dir/ownserp"
+		say SUCCESS "installed $("$install_dir/ownserp" --version) to $install_dir/ownserp"
+	fi
 	[[ "$host" == *linux* ]] || die "the MCPB bundle needs a Linux host to build"
 	require_tool zip "run: brew install zip"
 	local bundle="$DIST_DIR/ownserp-$CURRENT.mcpb"

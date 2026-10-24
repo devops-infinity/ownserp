@@ -42,7 +42,7 @@ git push -u origin release/prepare-X-Y-Z
 gh pr create --fill --base main
 ```
 
-3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh`, builds the host binary plus the aarch64, musl, and Windows targets with `cargo-zigbuild`, adds shell completions, the manual page, and the MCPB bundle, writes one archive and checksum per target, and stamps the host archive digest into the npm loader.
+3. Package from main. This refuses an empty changelog section, runs `tools/verify.sh`, builds the host binary plus the aarch64, musl, and Windows targets with `cargo-zigbuild`, adds shell completions, the manual page, and the MCPB bundle, writes one archive and checksum per target, installs the host binary into `~/.local/bin` (override with `OWN_SERPER_INSTALL_DIR`), and stamps the host archive digest into the npm loader.
 
 ```bash
 git switch main && git pull
