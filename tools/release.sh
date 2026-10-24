@@ -321,7 +321,7 @@ tag_release() {
 		git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
 	fi
 	say SUCCESS "created tag v$CURRENT (not pushed)"
-	say INFO "publish with: gh release create v$CURRENT \"$archive\" \"$archive.sha256\" --title \"OwnSERP $CURRENT\""
+	say INFO "publish with: gh release create v$CURRENT dist/ownserp-$CURRENT-* dist/ownserp-$CURRENT.mcpb* --title \"OwnSERP $CURRENT\""
 }
 
 case "$MODE" in
