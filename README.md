@@ -6,7 +6,7 @@ An MCP server for the Serper.dev search API, with per-call credit accounting.
 
 ## Status
 
-Pre-1.0. Every release ships from a tagged commit after the full local gate passes. The crate, the binary, and the configuration keys keep their names within the pre-1.0 line; a minor release may change behavior, and `CHANGELOG.md` records every change.
+Stable at 1.0. Every release ships from a tagged commit after the full local gate passes. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
 
 ## Contents
 
@@ -69,7 +69,7 @@ Linux installs the release binary. macOS builds from source through the formula.
 ### Release archive
 
 ```sh
-VERSION=0.1.5
+VERSION=1.0.0
 BASE="https://github.com/devops-infinity/ownserp/releases/download/v$VERSION"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz"
 curl -LO "$BASE/ownserp-$VERSION-x86_64-unknown-linux-gnu.tar.gz.sha256"

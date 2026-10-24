@@ -8,7 +8,7 @@ const https = require("node:https");
 const os = require("node:os");
 const path = require("node:path");
 
-const VERSION = "0.1.5";
+const VERSION = "1.0.0";
 const DIGEST = "a49a2706f7debeb53469a7ba411e6f8aef9e11a52e38038df6bc8106e7f0d11e";
 const ASSET = `ownserp-${VERSION}-x86_64-unknown-linux-gnu.tar.gz`;
 const BASE = `https://github.com/devops-infinity/ownserp/releases/download/v${VERSION}`;
