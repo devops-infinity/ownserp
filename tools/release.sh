@@ -118,7 +118,7 @@ require_clean_tree() {
 set_manifest_version() {
 	local file="$1" version="$2"
 	[[ -f "$file" ]] || die "missing $file"
-	jq --arg version "$version" '.version = $version' "$file" >"$file.tmp"
+	jq --arg version "$version" '.version = $version | (.packages[]?.version) = $version' "$file" >"$file.tmp"
 	mv "$file.tmp" "$file"
 }
 

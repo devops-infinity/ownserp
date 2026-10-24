@@ -6,6 +6,21 @@ All notable changes to this project are recorded here. The format follows Keep a
 
 The minimum supported Rust version is 1.89. Raising it is recorded in this file and ships in a minor release.
 
+## [0.1.1] - 2026-10-24
+
+### Changed
+
+- The product label reads OwnSERP wherever a person or a client sees it: the CLI name and version line, the MCP server identity, the README, the release title, the bundle display name, the image labels, and both crate descriptions. Package and registry identifiers stay lowercase.
+- The keyword `model-context-protocol` became `search-api`, because crates.io rejects a keyword longer than 20 characters.
+- Both packages carry the workspace README, so crates.io renders it.
+- Settings resolves through an injectable environment source, so the test suite no longer reads the developer shell.
+- The verification gate enforces the 80 percent line coverage floor.
+
+### Added
+
+- Repository hooks: a staged secret scan before each commit and the full gate before each push.
+- An installer, a release script, and a release runbook that run entirely on this machine, with no hosted pipeline.
+
 ## [0.1.0] - 2026-10-24
 
 ### Added

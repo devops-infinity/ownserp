@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "ownserp",
   "display_name": "OwnSERP",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Serper.dev search tools for MCP clients, with credit accounting",
   "author": {
     "name": "Md. Sazzad Hossain Sharkar",
@@ -14,7 +14,9 @@
     "entry_point": "server/ownserp",
     "mcp_config": {
       "command": "${__dirname}/server/ownserp",
-      "args": ["serve"],
+      "args": [
+        "serve"
+      ],
       "env": {
         "SERPER_API_KEY": "${user_config.serper_api_key}"
       }
@@ -30,6 +32,10 @@
     }
   },
   "compatibility": {
-    "platforms": ["darwin", "linux", "win32"]
+    "platforms": [
+      "darwin",
+      "linux",
+      "win32"
+    ]
   }
 }
