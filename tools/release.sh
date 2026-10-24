@@ -172,10 +172,10 @@ prepare() {
 	require_clean_tree
 	version_gt "$new" "$CURRENT" || die "$new is not newer than $CURRENT"
 	date="$(date +%F)"
-	say INFO "preparing $CURRENT -> $new"
+	log_line INFO "preparing $CURRENT -> $new"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would set the version in Cargo.toml, the ownserp-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the Dockerfile label, and the README install snippet"
-		say INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
+		log_line INFO "dry run: would set the version in Cargo.toml, the ownserp-core requirement, Cargo.lock, server.json, mcpb/manifest.json, the Dockerfile label, and the README install snippet"
+		log_line INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
 		return 0
 	fi
 	stamp_version "$REPO" "$CURRENT" "$new"
@@ -188,8 +188,8 @@ prepare() {
 	fi
 	insert_changelog_heading "$new" "$date"
 	verify_version_stamps "$REPO" "$new"
-	say SUCCESS "prepared $new"
-	say INFO "next: write the CHANGELOG entries, commit on a release branch, and merge into main"
+	log_line SUCCESS "prepared $new"
+	log_line INFO "next: write the CHANGELOG entries, commit on a release branch, and merge into main"
 }
 
 package() {
@@ -199,7 +199,7 @@ package() {
 	changelog_has_entries "$CURRENT" || die "CHANGELOG.md has no entries under ## [$CURRENT]; write them before packaging"
 	host="$(host_target)"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would run tools/verify.sh, build every cargo-dist target this host supports, and write the archives, installers, formula, and npm package under $DIST_DIR"
+		log_line INFO "dry run: would run tools/verify.sh, build every cargo-dist target this host supports, and write the archives, installers, formula, and npm package under $DIST_DIR"
 		return 0
 	fi
 	OWN_SERPER_STRICT_GATE=1 "$REPO/tools/verify.sh"
@@ -216,13 +216,13 @@ package() {
 	for target in "${targets[@]}"; do
 		if [[ "$target" == *-apple-darwin && "$host" != *-apple-darwin && -z "${SDKROOT:-}" ]]; then
 			skipped+=("$target")
-			say WARNING "$target needs macOS or an Apple SDK; build it on the Mac"
+			log_line WARNING "$target needs macOS or an Apple SDK; build it on the Mac"
 			continue
 		fi
 		if dist build --tag="v$CURRENT" --artifacts=local --target="$target" --no-local-paths --output-format=json >"$manifests/$target.json"; then
 			cp "$manifests/$target.json" "target/distrib/$target-dist-manifest.json"
 			built+=("$target")
-			say SUCCESS "built $target"
+			log_line SUCCESS "built $target"
 		else
 			die "$target failed to build"
 		fi
@@ -234,13 +234,13 @@ package() {
 	if command -v minisign >/dev/null 2>&1 && [[ -f "${HOME}/.minisign/minisign.key" ]]; then
 		minisign -Sm "$DIST_DIR/sha256.sum" -s "${HOME}/.minisign/minisign.key" >/dev/null
 		cp "${HOME}/.minisign/minisign.pub" "$DIST_DIR/minisign.pub" 2>/dev/null || cp "$REPO/minisign.pub" "$DIST_DIR/minisign.pub"
-		say SUCCESS "signed sha256.sum with minisign"
+		log_line SUCCESS "signed sha256.sum with minisign"
 	else
-		say WARNING "minisign or ~/.minisign/minisign.key is missing; sha256.sum is unsigned"
+		log_line WARNING "minisign or ~/.minisign/minisign.key is missing; sha256.sum is unsigned"
 	fi
 	if ((${#skipped[@]})); then
-		say WARNING "skipped targets: ${skipped[*]}"
-		say WARNING "the installers and formula still name every target; build the skipped ones on a macOS host before publishing"
+		log_line WARNING "skipped targets: ${skipped[*]}"
+		log_line WARNING "the installers and formula still name every target; build the skipped ones on a macOS host before publishing"
 		if [[ "${OWN_SERPER_ALLOW_PARTIAL:-0}" != "1" ]]; then
 			die "built ${#built[@]} of ${#targets[@]} targets; run --package on macOS for the Darwin targets, or set OWN_SERPER_ALLOW_PARTIAL=1 to publish this partial set on purpose"
 		fi
@@ -258,7 +258,7 @@ package() {
 	bundle="$DIST_DIR/ownserp-$CURRENT.mcpb"
 	(cd "$stage/bundle" && zip -qXr "$bundle" manifest.json server)
 	sha256_line_of "$bundle" >"$bundle.sha256"
-	say SUCCESS "wrote $bundle"
+	log_line SUCCESS "wrote $bundle"
 	archive="$DIST_DIR/ownserp-$host.tar.gz"
 	if [[ "$host" != *windows* && -f "$archive" ]]; then
 		install_dir="${OWN_SERPER_INSTALL_DIR:-$HOME/.local/bin}"
@@ -268,12 +268,12 @@ package() {
 		mkdir -p "$install_dir"
 		install -m 0755 "$tmpstage/ownserp-$host/ownserp" "$install_dir/.ownserp.new"
 		mv -f "$install_dir/.ownserp.new" "$install_dir/ownserp"
-		say SUCCESS "installed $("$install_dir/ownserp" --version) to $install_dir/ownserp"
+		log_line SUCCESS "installed $("$install_dir/ownserp" --version) to $install_dir/ownserp"
 	else
-		say WARNING "no host archive for $host; the local binary was not replaced"
+		log_line WARNING "no host archive for $host; the local binary was not replaced"
 	fi
-	[[ -f "$DIST_DIR/ownserp.rb" ]] && say INFO "the Homebrew formula is $DIST_DIR/ownserp.rb"
-	say INFO "next: run tools/release.sh --tag, then publish the files under $DIST_DIR"
+	[[ -f "$DIST_DIR/ownserp.rb" ]] && log_line INFO "the Homebrew formula is $DIST_DIR/ownserp.rb"
+	log_line INFO "next: run tools/release.sh --tag, then publish the files under $DIST_DIR"
 }
 
 tag_release() {
@@ -282,7 +282,7 @@ tag_release() {
 	[[ -f "$DIST_DIR/sha256.sum" ]] || die "missing $DIST_DIR/sha256.sum; run tools/release.sh --package first"
 	git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would create v$CURRENT at HEAD with the files under $DIST_DIR"
+		log_line INFO "dry run: would create v$CURRENT at HEAD with the files under $DIST_DIR"
 		return 0
 	fi
 	if [[ -n "$(git config user.signingkey || true)" ]]; then
@@ -290,8 +290,8 @@ tag_release() {
 	else
 		git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
 	fi
-	say SUCCESS "created tag v$CURRENT (not pushed)"
-	say INFO "publish with: gh release create v$CURRENT \"$DIST_DIR\"/* --title \"OwnSERP $CURRENT\" --notes-file <(sed -n '/## \\[$CURRENT\\]/,/^## \\[/p' CHANGELOG.md | head -n -1)"
+	log_line SUCCESS "created tag v$CURRENT (not pushed)"
+	log_line INFO "publish with: gh release create v$CURRENT \"$DIST_DIR\"/* --title \"OwnSERP $CURRENT\" --notes-file <(sed -n '/## \\[$CURRENT\\]/,/^## \\[/p' CHANGELOG.md | head -n -1)"
 }
 
 case "$MODE" in

@@ -417,7 +417,7 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
         state
             .allowed_hosts
             .iter()
-            .any(|allowed| host == allowed || bare_host(host) == bare_host(allowed))
+            .any(|allowed| host == allowed || host_without_port(host) == host_without_port(allowed))
     });
     if accepted {
         next.run(request).await
@@ -426,7 +426,7 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
     }
 }
 
-fn bare_host(value: &str) -> &str {
+fn host_without_port(value: &str) -> &str {
     if let Some(rest) = value.strip_prefix('[') {
         return rest.split(']').next().unwrap_or(rest);
     }
@@ -473,9 +473,9 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
 fn valid_request_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_REQUEST_ID
-        && value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_' | '.'))
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '-' | '_' | '.')
+        })
 }
 
 fn unix_nanos() -> u128 {
@@ -503,7 +503,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 }
 
 fn is_loopback(bind: &str) -> bool {
-    let host = host_of(bind);
+    let host = host_from_bind(bind);
     matches!(host.as_str(), "127.0.0.1" | "localhost" | "::1" | "[::1]")
 }
 
@@ -513,7 +513,7 @@ fn allowed_hosts(bind: &str, configured: Option<&[String]>) -> Vec<String> {
     {
         return hosts.to_vec();
     }
-    let host = host_of(bind);
+    let host = host_from_bind(bind);
     let mut hosts = vec![host.clone(), bind.to_owned(), format!("{host}:443")];
     if is_loopback(bind) {
         for alias in ["localhost", "127.0.0.1", "::1"] {
@@ -525,7 +525,7 @@ fn allowed_hosts(bind: &str, configured: Option<&[String]>) -> Vec<String> {
     hosts
 }
 
-fn host_of(bind: &str) -> String {
+fn host_from_bind(bind: &str) -> String {
     if let Some(rest) = bind.strip_prefix('[') {
         return rest.split(']').next().unwrap_or(rest).to_owned();
     }
@@ -700,12 +700,12 @@ mod tests {
 
     #[test]
     fn the_host_split_keeps_ipv6_and_drops_only_a_real_port() {
-        assert_eq!(bare_host("127.0.0.1:8777"), "127.0.0.1");
-        assert_eq!(bare_host("example.org:443"), "example.org");
-        assert_eq!(bare_host("::1"), "::1");
-        assert_eq!(bare_host("[::1]:8777"), "::1");
-        assert_eq!(bare_host(":443"), ":443");
-        assert_eq!(bare_host("example.org"), "example.org");
+        assert_eq!(host_without_port("127.0.0.1:8777"), "127.0.0.1");
+        assert_eq!(host_without_port("example.org:443"), "example.org");
+        assert_eq!(host_without_port("::1"), "::1");
+        assert_eq!(host_without_port("[::1]:8777"), "::1");
+        assert_eq!(host_without_port(":443"), ":443");
+        assert_eq!(host_without_port("example.org"), "example.org");
     }
 
     #[test]

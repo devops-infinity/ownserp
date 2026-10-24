@@ -38,21 +38,21 @@ case "${1:-}" in
 esac
 
 if command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
-	say SUCCESS "GitHub CLI is authenticated as $(gh api user --jq .login 2>/dev/null || echo an account)"
+	log_line SUCCESS "GitHub CLI is authenticated as $(gh api user --jq .login 2>/dev/null || echo an account)"
 else
 	warn "GitHub CLI is not authenticated; set GITHUB_TOKEN or run gh auth login"
 fi
 
 if command -v npm >/dev/null 2>&1; then
 	if who="$(npm whoami 2>/dev/null)"; then
-		say SUCCESS "npm is authenticated as $who"
+		log_line SUCCESS "npm is authenticated as $who"
 	else
 		warn "npm is not authenticated; run tools/npm-auth-setup.sh once"
 	fi
 fi
 
 if [[ -n "${CARGO_REGISTRY_TOKEN:-}" ]]; then
-	say SUCCESS "CARGO_REGISTRY_TOKEN is set for crates.io"
+	log_line SUCCESS "CARGO_REGISTRY_TOKEN is set for crates.io"
 else
 	warn "CARGO_REGISTRY_TOKEN is not set; cargo publish will refuse"
 fi
@@ -67,7 +67,7 @@ if command -v mcp-publisher >/dev/null 2>&1; then
 	done
 	if [[ -n "$source_var" ]]; then
 		if env MCP_GITHUB_TOKEN="${!source_var}" mcp-publisher login github >/dev/null 2>&1; then
-			say SUCCESS "MCP Registry session refreshed from $source_var"
+			log_line SUCCESS "MCP Registry session refreshed from $source_var"
 		else
 			warn "MCP Registry login failed with $source_var; the token needs the read:org scope"
 		fi
@@ -79,10 +79,10 @@ fi
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
 	login="$(gh api user --jq .login 2>/dev/null || true)"
 	if [[ -n "$login" ]] && gh auth token 2>/dev/null | docker login ghcr.io -u "$login" --password-stdin >/dev/null 2>&1; then
-		say SUCCESS "ghcr login refreshed from GITHUB_TOKEN"
+		log_line SUCCESS "ghcr login refreshed from GITHUB_TOKEN"
 	else
 		warn "ghcr login was not refreshed; pushes will need docker login"
 	fi
 fi
 
-say INFO "credentials stay in the environment; no secret is written by this script"
+log_line INFO "credentials stay in the environment; no secret is written by this script"

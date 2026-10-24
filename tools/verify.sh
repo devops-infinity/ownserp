@@ -11,7 +11,7 @@ STEP="startup"
 LOG="$(mktemp)"
 
 on_signal() {
-	say FAILED "interrupted during: $STEP"
+	log_line FAILED "interrupted during: $STEP"
 	rm -f "$LOG"
 	trap - INT TERM
 	kill -s "$1" "$$"
@@ -25,11 +25,11 @@ run_check() {
 	local hint="$2"
 	shift 2
 	if ! "$@" >"$LOG" 2>&1; then
-		say FAILED "$STEP"
+		log_line FAILED "$STEP"
 		tail -n 40 "$LOG" >&2
 		die "$hint"
 	fi
-	say SUCCESS "$STEP"
+	log_line SUCCESS "$STEP"
 }
 
 SKIPPED=()
@@ -44,7 +44,7 @@ skip_check() {
 
 SHELL_FILES=(tools/*.sh .githooks/pre-commit .githooks/pre-push)
 bash -n "${SHELL_FILES[@]}" || die "a shell script has a syntax error"
-say SUCCESS "shell syntax"
+log_line SUCCESS "shell syntax"
 
 require_tool cargo "install Rust from https://rustup.rs"
 require_tool shellcheck "run: brew install shellcheck"
@@ -87,7 +87,7 @@ run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --
 run_check "secret scan (history)" "a credential pattern is in the commit history" gitleaks git --redact --exit-code 1 --config .gitleaks.toml
 
 if ((${#SKIPPED[@]})); then
-	say WARNING "gate passed with skipped checks: ${SKIPPED[*]}"
+	log_line WARNING "gate passed with skipped checks: ${SKIPPED[*]}"
 else
-	say SUCCESS "gate passed: $REPO"
+	log_line SUCCESS "gate passed: $REPO"
 fi

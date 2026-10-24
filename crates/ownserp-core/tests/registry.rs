@@ -13,7 +13,7 @@ use ownserp_core::{Overrides, OwnserpHandler, Settings};
 use serde_json::Value;
 
 #[test]
-fn catalog_is_prefixed_bounded_and_fully_typed() {
+fn catalog_tools_have_prefixed_unique_names_and_complete_schemas() {
     let handler = OwnserpHandler::new(common::settings("catalog")).expect("handler");
     let tools = handler.tools();
     assert_eq!(tools.len(), 16, "batch stays disabled by default");
@@ -120,7 +120,7 @@ fn catalog_fits_the_measured_budget() {
 }
 
 #[test]
-fn batch_is_gated_by_configuration() {
+fn the_batch_tool_appears_only_when_enabled() {
     let base = common::settings("gate");
     let handler = OwnserpHandler::new(base).expect("handler");
     assert!(

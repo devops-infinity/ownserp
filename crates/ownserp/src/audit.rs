@@ -6,8 +6,8 @@ use crate::output::emit;
 
 pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
     match args.action {
-        AuditAction::Verify { file } => {
-            let path = match file {
+        AuditAction::Verify { ledger_file } => {
+            let path = match ledger_file {
                 Some(path) => path,
                 None => {
                     let settings =
@@ -16,7 +16,7 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
                 }
             };
             if !path.exists() {
-                if file_is_default(&path) {
+                if path_is_under_the_default_data_dir(&path) {
                     emit(&format!("no ledger yet at {}", path.display()))?;
                     return Ok(());
                 }
@@ -26,8 +26,8 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
             emit(&format!("ledger verified: {rows} rows, hash chain intact"))?;
             Ok(())
         }
-        AuditAction::Rotate { file } => {
-            let path = match file {
+        AuditAction::Rotate { ledger_file } => {
+            let path = match ledger_file {
                 Some(path) => path,
                 None => {
                     let settings =
@@ -47,7 +47,7 @@ pub(crate) fn run(args: AuditArgs) -> anyhow::Result<()> {
     }
 }
 
-fn file_is_default(path: &std::path::Path) -> bool {
+fn path_is_under_the_default_data_dir(path: &std::path::Path) -> bool {
     path.starts_with(default_data_dir())
 }
 
@@ -92,13 +92,13 @@ mod tests {
         }
         run(AuditArgs {
             action: AuditAction::Verify {
-                file: Some(path.clone()),
+                ledger_file: Some(path.clone()),
             },
         })
         .expect("verify");
         run(AuditArgs {
             action: AuditAction::Rotate {
-                file: Some(path.clone()),
+                ledger_file: Some(path.clone()),
             },
         })
         .expect("rotate");
@@ -113,17 +113,21 @@ mod tests {
 
     #[test]
     fn a_file_under_the_data_directory_counts_as_the_default() {
-        assert!(file_is_default(
+        assert!(path_is_under_the_default_data_dir(
             &ownserp_core::default_data_dir().join("ledger/calls.jsonl")
         ));
-        assert!(!file_is_default(std::path::Path::new("/tmp/calls.jsonl")));
+        assert!(!path_is_under_the_default_data_dir(std::path::Path::new(
+            "/tmp/calls.jsonl"
+        )));
     }
 
     #[test]
     fn verifying_a_missing_named_ledger_is_an_error() {
         let path = temp_dir("missing-verify").join("calls.jsonl");
         let outcome = run(AuditArgs {
-            action: AuditAction::Verify { file: Some(path) },
+            action: AuditAction::Verify {
+                ledger_file: Some(path),
+            },
         });
         assert!(outcome.is_err());
     }
@@ -132,7 +136,9 @@ mod tests {
     fn rotating_a_missing_ledger_reports_an_error() {
         let path = temp_dir("missing").join("calls.jsonl");
         let outcome = run(AuditArgs {
-            action: AuditAction::Rotate { file: Some(path) },
+            action: AuditAction::Rotate {
+                ledger_file: Some(path),
+            },
         });
         assert!(outcome.is_err());
     }

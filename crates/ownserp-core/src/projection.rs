@@ -9,13 +9,13 @@ use crate::types::Preset;
 
 pub const MAX_RESULT_BYTES: usize = 262_144;
 pub(crate) const MAX_SCRAPE_CHARS: usize = 200_000;
-const STANDARD_SNIPPET: usize = 300;
-const STANDARD_ANSWER: usize = 200;
+const STANDARD_FIELD_CHARS: usize = 300;
+const STANDARD_PEOPLE_ASK_CHARS: usize = 200;
 const STANDARD_RELATED: usize = 6;
 
-fn is_invisible(ch: char) -> bool {
+fn is_invisible(character: char) -> bool {
     matches!(
-        ch,
+        character,
         '\u{00AD}'
             | '\u{200B}'..='\u{200F}'
             | '\u{202A}'..='\u{202E}'
@@ -33,7 +33,7 @@ fn is_invisible(ch: char) -> bool {
             | '\u{E0000}'..='\u{E007F}'
             | '\u{E0100}'..='\u{E01EF}'
     ) || matches!(
-        ch,
+        character,
         '\u{061C}'
             | '\u{2028}'
             | '\u{2029}'
@@ -41,7 +41,7 @@ fn is_invisible(ch: char) -> bool {
             | '\u{180E}'
             | '\u{FFF9}'..='\u{FFFB}'
             | '\u{1D173}'..='\u{1D17A}'
-    ) || (ch.is_control() && ch != '\n' && ch != '\t')
+    ) || (character.is_control() && character != '\n' && character != '\t')
 }
 
 pub(crate) fn sanitize_value(value: &Value) -> Value {
@@ -62,15 +62,19 @@ pub(crate) fn sanitize_value(value: &Value) -> Value {
     }
 }
 
-pub fn sanitize(raw: &str) -> String {
-    let mut out = String::with_capacity(raw.len());
+pub fn sanitize(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
     let mut last_space = false;
-    for ch in raw.chars() {
-        if is_invisible(ch) {
+    for character in text.chars() {
+        if is_invisible(character) {
             continue;
         }
-        let ch = if ch == '\n' || ch == '\t' { ' ' } else { ch };
-        if ch == ' ' {
+        let character = if character == '\n' || character == '\t' {
+            ' '
+        } else {
+            character
+        };
+        if character == ' ' {
             if last_space {
                 continue;
             }
@@ -78,7 +82,7 @@ pub fn sanitize(raw: &str) -> String {
         } else {
             last_space = false;
         }
-        out.push(ch);
+        out.push(character);
     }
     let trimmed = out.trim();
     if trimmed.len() == out.len() {
@@ -93,8 +97,8 @@ pub(crate) fn cap(input: &str, max_chars: usize) -> (String, bool) {
         return (input.to_owned(), false);
     }
     let mut out = String::with_capacity(max_chars.saturating_mul(4).saturating_add(3));
-    for ch in input.chars().take(max_chars) {
-        out.push(ch);
+    for character in input.chars().take(max_chars) {
+        out.push(character);
     }
     out.push_str("...");
     (out, true)
@@ -157,7 +161,7 @@ pub(crate) fn object<'a>(raw: &'a Value, key: &str) -> Option<&'a Value> {
 fn snippet_for(value: &Value, preset: Preset) -> (Option<String>, bool) {
     match preset {
         Preset::Minimal => (None, false),
-        Preset::Standard => capped_field(value, "snippet", STANDARD_SNIPPET),
+        Preset::Standard => capped_field(value, "snippet", STANDARD_FIELD_CHARS),
         Preset::Full => (text_field(value, "snippet"), false),
     }
 }
@@ -178,7 +182,7 @@ pub(crate) fn organic(raw: &Value, preset: Preset) -> (Vec<OrganicItem>, bool) {
         let attributes = match preset {
             Preset::Full => value
                 .get("attributes")
-                .filter(|value| value.is_object())
+                .filter(|attributes| attributes.is_object())
                 .map(sanitize_value),
             _ => None,
         };
@@ -283,7 +287,7 @@ pub(crate) fn places(raw: &Value, preset: Preset) -> (Vec<PlaceItem>, bool) {
     let mut items = Vec::new();
     for value in array(raw, "places") {
         let (description, cut) = match preset {
-            Preset::Standard => capped_field(value, "description", STANDARD_SNIPPET),
+            Preset::Standard => capped_field(value, "description", STANDARD_FIELD_CHARS),
             Preset::Full => (text_field(value, "description"), false),
             Preset::Minimal => (None, false),
         };
@@ -480,13 +484,13 @@ pub(crate) fn scholar(raw: &Value, preset: Preset) -> (Vec<ScholarItem>, bool) {
 
 pub(crate) fn patents(raw: &Value, preset: Preset) -> (Vec<PatentItem>, bool) {
     let mut truncated = false;
-    let source = if array(raw, "patents").is_empty() {
+    let entries = if array(raw, "patents").is_empty() {
         array(raw, "organic")
     } else {
         array(raw, "patents")
     };
     let mut items = Vec::new();
-    for value in source {
+    for value in entries {
         let (snippet, cut) = snippet_for(value, preset);
         truncated |= cut;
         items.push(PatentItem {
@@ -539,10 +543,10 @@ pub(crate) fn patents(raw: &Value, preset: Preset) -> (Vec<PatentItem>, bool) {
 pub(crate) fn suggestions(raw: &Value) -> Vec<Suggestion> {
     array(raw, "suggestions")
         .iter()
-        .filter_map(|value| {
-            let text = match value {
+        .filter_map(|entry| {
+            let text = match entry {
                 Value::String(text) => Some(text.clone()),
-                _ => value
+                _ => entry
                     .get("value")
                     .and_then(Value::as_str)
                     .map(ToOwned::to_owned),
@@ -609,11 +613,11 @@ pub(crate) fn lens(raw: &Value, preset: Preset) -> (Vec<LensItem>, bool) {
 }
 
 pub(crate) fn locations(raw: &Value) -> Vec<LocationItem> {
-    let source = match raw {
+    let entries = match raw {
         Value::Array(items) => items.as_slice(),
         _ => array(raw, "locations"),
     };
-    source
+    entries
         .iter()
         .map(|value| LocationItem {
             name: text_field(value, "name"),
@@ -642,7 +646,7 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
     let mut truncated = false;
     let knowledge_graph = object(raw, "knowledgeGraph").map(|value| {
         let (description, cut) = match preset {
-            Preset::Standard => capped_field(value, "description", STANDARD_SNIPPET),
+            Preset::Standard => capped_field(value, "description", STANDARD_FIELD_CHARS),
             Preset::Full => (text_field(value, "description"), false),
             Preset::Minimal => (None, false),
         };
@@ -658,7 +662,7 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
             attributes: match preset {
                 Preset::Full => value
                     .get("attributes")
-                    .filter(|value| value.is_object())
+                    .filter(|attributes| attributes.is_object())
                     .map(sanitize_value),
                 _ => None,
             },
@@ -668,7 +672,7 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
         title: text_field(value, "title"),
         answer: match preset {
             Preset::Standard => {
-                let (answer, cut) = capped_field(value, "answer", STANDARD_SNIPPET);
+                let (answer, cut) = capped_field(value, "answer", STANDARD_FIELD_CHARS);
                 truncated |= cut;
                 answer
             }
@@ -680,20 +684,22 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
         list: text_array(value, "list"),
     });
     let people_also_ask = {
-        let source = array(raw, "peopleAlsoAsk");
-        if source.is_empty() {
+        let entries = array(raw, "peopleAlsoAsk");
+        if entries.is_empty() {
             None
         } else {
             let limit = match preset {
                 Preset::Standard => STANDARD_RELATED,
-                _ => source.len(),
+                _ => entries.len(),
             };
-            let items: Vec<PeopleAlsoAsk> = source
+            let items: Vec<PeopleAlsoAsk> = entries
                 .iter()
                 .take(limit)
                 .map(|value| {
                     let (snippet, cut) = match preset {
-                        Preset::Standard => capped_field(value, "snippet", STANDARD_ANSWER),
+                        Preset::Standard => {
+                            capped_field(value, "snippet", STANDARD_PEOPLE_ASK_CHARS)
+                        }
                         Preset::Full => (text_field(value, "snippet"), false),
                         Preset::Minimal => (None, false),
                     };
@@ -706,25 +712,25 @@ pub fn search_sections(raw: &Value, preset: Preset) -> SearchSections {
                     }
                 })
                 .collect();
-            truncated |= source.len() > limit;
+            truncated |= entries.len() > limit;
             Some(items)
         }
     };
     let related_searches = {
-        let source = array(raw, "relatedSearches");
-        if source.is_empty() {
+        let entries = array(raw, "relatedSearches");
+        if entries.is_empty() {
             None
         } else {
             let limit = match preset {
                 Preset::Standard => STANDARD_RELATED,
-                _ => source.len(),
+                _ => entries.len(),
             };
-            let values: Vec<String> = source
+            let values: Vec<String> = entries
                 .iter()
                 .take(limit)
                 .filter_map(|value| text_field(value, "query"))
                 .collect();
-            truncated |= source.len() > limit;
+            truncated |= entries.len() > limit;
             if values.is_empty() {
                 None
             } else {
@@ -759,16 +765,16 @@ pub struct ScrapeContent {
 
 pub(crate) fn scrape_content(raw: &Value, preset: Preset) -> ScrapeContent {
     let mut truncated = false;
-    let mut pick = |key: &str| -> Option<String> {
+    let mut capped_text = |key: &str| -> Option<String> {
         let text = text_field(raw, key)?;
         let (capped, cut) = cap(&text, MAX_SCRAPE_CHARS);
         truncated |= cut;
         Some(capped)
     };
-    let markdown = pick("markdown");
+    let markdown = capped_text("markdown");
     let text = match preset {
         Preset::Minimal => None,
-        _ => pick("text"),
+        _ => capped_text("text"),
     };
     ScrapeContent {
         markdown,
@@ -924,14 +930,14 @@ fn shrink_text(value: &mut Value, max_bytes: usize) {
 }
 
 pub fn summary_text(
-    results: usize,
+    result_count: usize,
     top_title: Option<&str>,
     credits: u32,
     usd: Option<f64>,
 ) -> String {
     let top = cap(top_title.unwrap_or("no title"), 160).0;
     let price = usd.map_or_else(|| "usd unknown".to_owned(), |value| format!("${value:.6}"));
-    format!("{results} results; top: {top}; cost: {credits} credits ({price})")
+    format!("{result_count} results; top: {top}; cost: {credits} credits ({price})")
 }
 
 #[cfg(test)]

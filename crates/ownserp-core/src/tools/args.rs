@@ -76,7 +76,7 @@ impl SearchArgs {
             body.insert("location".to_owned(), Value::String(location.into()));
         }
         if let Some(ll) = &self.ll {
-            body.insert("ll".to_owned(), Value::String(ll.as_query().to_owned()));
+            body.insert("ll".to_owned(), Value::String(ll.as_str().to_owned()));
         }
         reject_unsupported(endpoint, &body)?;
         Ok(Value::Object(body))
@@ -116,8 +116,10 @@ fn validate_query(raw: &str) -> Result<String> {
 
 fn validate_code(raw: &str, field: &str) -> Result<String> {
     let trimmed = raw.trim();
-    let is_valid =
-        trimmed.chars().count() == 2 && trimmed.chars().all(|ch| ch.is_ascii_alphabetic());
+    let is_valid = trimmed.chars().count() == 2
+        && trimmed
+            .chars()
+            .all(|character| character.is_ascii_alphabetic());
     if !is_valid {
         let shown: String = raw.chars().take(16).collect();
         return Err(Error::InvalidArgs(format!(
@@ -439,13 +441,13 @@ pub struct SessionArgs {
 mod tests {
     use super::*;
 
-    fn search(raw: serde_json::Value) -> SearchArgs {
+    fn parse_search_args(raw: serde_json::Value) -> SearchArgs {
         serde_json::from_value(raw).expect("args parse")
     }
 
     #[test]
     fn a_search_body_carries_only_what_was_set() {
-        let args = search(serde_json::json!({"q": "apple inc", "gl": "US", "num": 5}));
+        let args = parse_search_args(serde_json::json!({"q": "apple inc", "gl": "US", "num": 5}));
         let body = args.body(Endpoint::Search).expect("body");
         assert_eq!(body.get("gl").and_then(Value::as_str), Some("us"));
         assert_eq!(body.get("num").and_then(Value::as_u64), Some(5));
@@ -454,24 +456,24 @@ mod tests {
     }
 
     #[test]
-    fn codes_and_bounds_are_enforced() {
-        let bad_gl = search(serde_json::json!({"q": "x", "gl": "usa"}));
+    fn search_body_rejects_bad_codes_out_of_range_numbers_and_blank_queries() {
+        let bad_gl = parse_search_args(serde_json::json!({"q": "x", "gl": "usa"}));
         assert!(bad_gl.body(Endpoint::Search).is_err());
-        let bad_num = search(serde_json::json!({"q": "x", "num": 0}));
+        let bad_num = parse_search_args(serde_json::json!({"q": "x", "num": 0}));
         assert!(bad_num.body(Endpoint::Search).is_err());
-        let big_num = search(serde_json::json!({"q": "x", "num": 101}));
+        let big_num = parse_search_args(serde_json::json!({"q": "x", "num": 101}));
         assert!(big_num.body(Endpoint::Search).is_err());
-        let bad_page = search(serde_json::json!({"q": "x", "page": 0}));
+        let bad_page = parse_search_args(serde_json::json!({"q": "x", "page": 0}));
         assert!(bad_page.body(Endpoint::Search).is_err());
-        let empty_query = search(serde_json::json!({"q": "   "}));
+        let empty_query = parse_search_args(serde_json::json!({"q": "   "}));
         assert!(empty_query.body(Endpoint::Search).is_err());
     }
 
     #[test]
     fn autocomplete_rejects_parameters_it_does_not_take() {
-        let args = search(serde_json::json!({"q": "appl", "num": 5}));
+        let args = parse_search_args(serde_json::json!({"q": "appl", "num": 5}));
         assert!(args.body(Endpoint::Autocomplete).is_err());
-        let valid_args = search(serde_json::json!({"q": "appl", "gl": "us"}));
+        let valid_args = parse_search_args(serde_json::json!({"q": "appl", "gl": "us"}));
         assert!(valid_args.body(Endpoint::Autocomplete).is_ok());
     }
 
@@ -507,9 +509,9 @@ mod tests {
 
     #[test]
     fn location_queries_carry_the_limit_within_bounds() {
-        let ok: LocationsArgs =
+        let within_bounds: LocationsArgs =
             serde_json::from_value(serde_json::json!({"q": "dhaka", "limit": 5})).expect("parse");
-        let query = ok.query().expect("query");
+        let query = within_bounds.query().expect("query");
         assert_eq!(query.len(), 2);
         assert_eq!(query[1].0, "limit");
         assert_eq!(query[1].1, "5");
@@ -548,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn batch_bounds_are_enforced() {
+    fn batch_rejects_an_empty_query_list_and_accepts_two_queries() {
         let empty: BatchArgs =
             serde_json::from_value(serde_json::json!({"kind": "search", "queries": []}))
                 .expect("parse");

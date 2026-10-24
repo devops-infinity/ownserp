@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 
-say() { printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >&2; }
-warn() { say WARNING "$1"; }
+log_line() { printf '%s [%s] %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$1" "$2" >&2; }
+warn() { log_line WARNING "$1"; }
 die() {
-	say FAILED "$1"
+	log_line FAILED "$1"
 	exit 1
 }
 
@@ -80,42 +80,42 @@ stamp_version() {
 }
 
 verify_version_stamps() {
-	local root="$1" want="$2" ok=0 file actual package
+	local root="$1" want="$2" mismatch=0 file actual package
 	actual="$(workspace_version "$root")"
 	if [[ "$actual" != "$want" ]]; then
 		warn "Cargo.toml reports $actual"
-		ok=1
+		mismatch=1
 	fi
 	for file in server.json mcpb/manifest.json; do
 		[[ -f "$root/$file" ]] || continue
 		actual="$(jq -r .version "$root/$file")"
 		if [[ "$actual" != "$want" ]]; then
 			warn "$file reports $actual"
-			ok=1
+			mismatch=1
 		fi
 	done
 	if [[ -f "$root/Dockerfile" ]] && ! grep -q "org.opencontainers.image.version=\"$want\"" "$root/Dockerfile"; then
 		warn "Dockerfile does not label $want"
-		ok=1
+		mismatch=1
 	fi
 	local dependency="$root/crates/ownserp/Cargo.toml"
 	if [[ -f "$dependency" ]] && ! grep -qF "ownserp-core = { path = \"../ownserp-core\", version = \"$want\" }" "$dependency"; then
 		warn "crates/ownserp/Cargo.toml does not require ownserp-core $want"
-		ok=1
+		mismatch=1
 	fi
 	if [[ -f "$root/README.md" ]] && ! grep -qF "VERSION=$want" "$root/README.md"; then
 		warn "README.md does not show VERSION=$want"
-		ok=1
+		mismatch=1
 	fi
 	if [[ -f "$root/Cargo.lock" ]]; then
 		for package in ownserp ownserp-core; do
 			if ! grep -A1 -F "name = \"$package\"" "$root/Cargo.lock" | grep -qF "version = \"$want\""; then
 				warn "Cargo.lock does not report $want for $package"
-				ok=1
+				mismatch=1
 			fi
 		done
 	fi
-	[[ "$ok" -eq 0 ]] || die "the version stamp did not reach every file for $want"
+	[[ "$mismatch" -eq 0 ]] || die "the version stamp did not reach every file for $want"
 }
 
 host_target() {

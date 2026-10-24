@@ -500,14 +500,14 @@ mod tests {
 
     fn load(
         label: &str,
-        profile: &str,
+        body: &str,
         pairs: &[(&str, &str)],
         overrides: Overrides,
     ) -> Result<Settings> {
         let map = environment(pairs);
         Settings::load_with(
             Overrides {
-                profile: Some(profile_file(label, profile)),
+                profile: Some(profile_file(label, body)),
                 ..overrides
             },
             |name| map.get(name).cloned(),

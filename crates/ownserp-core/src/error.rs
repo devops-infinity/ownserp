@@ -185,24 +185,24 @@ impl From<url::ParseError> for Error {
 }
 
 fn redact_url_queries(text: &str) -> String {
-    let mut result = String::with_capacity(text.len());
+    let mut redacted_text = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(query) = rest.find('?') {
         if !rest.get(..query).is_some_and(|head| head.contains("://")) {
-            result.push_str(rest.get(..=query).unwrap_or_default());
+            redacted_text.push_str(rest.get(..=query).unwrap_or_default());
             rest = rest.get(query.saturating_add(1)..).unwrap_or_default();
             continue;
         }
-        result.push_str(rest.get(..query).unwrap_or_default());
-        result.push_str("?<redacted>");
+        redacted_text.push_str(rest.get(..query).unwrap_or_default());
+        redacted_text.push_str("?<redacted>");
         let tail = rest.get(query.saturating_add(1)..).unwrap_or_default();
         let end = tail
-            .find(|ch: char| ch.is_whitespace() || ch == ')')
+            .find(|character: char| character.is_whitespace() || character == ')')
             .unwrap_or(tail.len());
         rest = tail.get(end..).unwrap_or_default();
     }
-    result.push_str(rest);
-    result
+    redacted_text.push_str(rest);
+    redacted_text
 }
 
 #[cfg(test)]
@@ -230,7 +230,7 @@ mod tests {
     }
 
     #[test]
-    fn json_and_io_errors_report_a_chain() {
+    fn a_json_error_reports_its_cause_chain() {
         let json = serde_json::from_str::<serde_json::Value>("{").expect_err("invalid json");
         let error = Error::from(json);
         assert_eq!(
@@ -258,7 +258,7 @@ mod tests {
     }
 
     #[test]
-    fn every_code_and_remedy_is_present() {
+    fn a_budget_refused_error_carries_a_code_and_a_remedy() {
         let error = Error::BudgetRefused("10 credits".to_owned());
         let body = error.to_json();
         assert_eq!(

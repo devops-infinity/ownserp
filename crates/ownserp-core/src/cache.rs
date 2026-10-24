@@ -10,7 +10,7 @@ const ENTRY_OVERHEAD_BYTES: usize = 128;
 
 struct Entry {
     body: Arc<Value>,
-    stored: Instant,
+    stored_at: Instant,
     bytes: usize,
 }
 
@@ -54,7 +54,7 @@ impl ResponseCache {
         let Some(entry) = state.entries.get(key) else {
             return Ok(None);
         };
-        let age = entry.stored.elapsed();
+        let age = entry.stored_at.elapsed();
         if age > self.ttl {
             let removed = state.entries.remove(key);
             if let Some(removed) = removed {
@@ -100,7 +100,7 @@ impl ResponseCache {
             key,
             Entry {
                 body,
-                stored: Instant::now(),
+                stored_at: Instant::now(),
                 bytes,
             },
         );
