@@ -11,6 +11,7 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 ### Changed
 
 - Release packaging moved to cargo-dist: prebuilt archives for macOS, Linux, and Windows, shell and PowerShell installers, a Homebrew formula that installs the binary, and an npm package that selects the platform archive.
+- Releases are built by `.github/workflows/release.yml` on a macOS runner when a `v*` tag is pushed; the workflow attaches every archive, the installers, the formula, the npm package, and the MCPB bundle to the release.
 - The Docker example sets `OWN_SERPER_ALLOWED_HOSTS`, because the image binds `0.0.0.0` and the derived allowlist matches no client Host.
 
 ### Fixed

@@ -1,6 +1,6 @@
 # Releasing OwnSERP
 
-Everything runs on this machine. There is no GitHub Actions workflow, no hosted pipeline, and no release job. `tools/release.sh` does the local half, and `gh` publishes the result only when you run it.
+Everything is prepared on this machine, and the release build runs on a macOS runner. Pushing a `v*` tag starts `.github/workflows/release.yml`, which builds every target and creates the GitHub release. `tools/release.sh` prepares the version and can package locally when you want that.
 
 ## One-time setup
 
@@ -46,26 +46,29 @@ git push -u origin release/prepare-X-Y-Z
 gh pr create --fill --base main
 ```
 
-3. Package from main, on macOS. This refuses an empty changelog section, runs `tools/verify.sh` with `OWN_SERPER_STRICT_GATE=1` so no check is skipped, and runs `dist build` for every target in `[workspace.metadata.dist]`. It writes the archives and checksums, the shell and PowerShell installers, the Homebrew formula, the npm package, and `sha256.sum`, builds the Linux MCPB bundle, and installs the host binary into `~/.local/bin` (override with `OWN_SERPER_INSTALL_DIR`).
+3. Tag the merged commit and push the tag. The release workflow builds every target on a macOS runner and creates the GitHub release.
 
 ```bash
 git switch main && git pull
-tools/release.sh --package
-```
-
-Run this on macOS so the two Darwin targets are built. A Linux host skips them with a warning, because the Apple frameworks need the macOS SDK. The output lands in `dist/`: one archive and checksum per target, `ownserp-installer.sh`, `ownserp-installer.ps1`, `ownserp.rb`, `ownserp-npm-package.tar.gz`, `sha256.sum`, `source.tar.gz`, and the MCPB bundle.
-
-4. Tag the merged commit, then publish, on your order.
-
-```bash
-git switch main && git pull
-tools/release.sh --tag
+git tag -a vX.Y.Z -m "OwnSERP X.Y.Z"
 git push origin vX.Y.Z
-gh release create vX.Y.Z dist/* --title "OwnSERP X.Y.Z" --notes-file <(sed -n '/## \[X.Y.Z\]/,/^## \[/p' CHANGELOG.md | head -n -1)
-tools/publish-npm.sh
 ```
 
-The tag is created only after `dist/` holds a packaged release. Nothing is pushed or published by the release script.
+The run is at https://github.com/devops-infinity/ownserp/actions/workflows/release.yml. It attaches one archive and checksum per target, the shell and PowerShell installers, `ownserp.rb`, `ownserp-npm-package.tar.gz`, `sha256.sum`, `source.tar.gz`, and the MCPB bundle. The Apple targets compile natively, and Linux and Windows cross-build with zig. When the `MINISIGN_KEY` repository secret is set, the workflow also signs `sha256.sum` and attaches `minisign.pub`.
+
+To build the same files locally instead, run `tools/release.sh --package` on macOS, then `tools/release.sh --tag`. A Linux host skips the Apple targets and refuses a partial set.
+
+4. Publish the other channels after the release exists, on your order.
+
+```bash
+gh release download vX.Y.Z --pattern 'ownserp-npm-package.tar.gz' --pattern 'ownserp.rb' --dir dist
+mkdir -p target/distrib/ownserp-npm-package
+tar -xzf dist/ownserp-npm-package.tar.gz -C target/distrib/ownserp-npm-package --strip-components=1
+tools/publish-npm.sh
+cargo publish -p ownserp-core --locked
+cargo publish -p ownserp --locked
+mcp-publisher publish
+```
 
 After the release exists, finish the other channels:
 
@@ -98,7 +101,7 @@ tools/reinstall.sh --skip-gate --dir /usr/local/bin
 
 ## What a release does not do
 
-- It does not create or edit a GitHub workflow.
+- It does not run the release workflow. Pushing the tag does that.
 - It does not commit, push, tag a remote, or publish a release. Those are separate commands you run.
 - It does not push the Homebrew formula. Copy `dist/ownserp.rb` into the tap and push it.
 - It does not publish to crates.io, npm, or the MCP Registry. Each stays a deliberate command after `tools/registry-auth.sh`, so a publish is never an accident.
