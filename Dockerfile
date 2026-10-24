@@ -8,7 +8,7 @@ FROM debian:bookworm-slim@sha256:7ff6ba31527b9e336162fa061746c366c4b2032f4d2cff2
 LABEL org.opencontainers.image.title="OwnSERP" \
       org.opencontainers.image.description="OwnSERP, an MCP server for the Serper.dev search API" \
       org.opencontainers.image.source="https://github.com/devops-infinity/ownserp" \
-      org.opencontainers.image.version="0.1.2" \
+      org.opencontainers.image.version="0.1.3" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 RUN useradd --system --uid 10001 --create-home ownserp
 COPY --from=builder /src/target/release/ownserp /usr/local/bin/ownserp
