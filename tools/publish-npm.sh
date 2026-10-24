@@ -77,10 +77,10 @@ if ! npm publish --access public 2>&1 | tee "$LOG"; then
 	die "npm publish failed; read the output above"
 fi
 PUBLISHED=""
-for _ in 1 2 3 4 5 6 7 8 9 10; do
+for _ in $(seq 1 24); do
 	PUBLISHED="$(npm view "$PACKAGE_NAME@$PACKAGE_VERSION" version 2>/dev/null || true)"
 	[[ "$PUBLISHED" == "$PACKAGE_VERSION" ]] && break
 	sleep 10
 done
-[[ "$PUBLISHED" == "$PACKAGE_VERSION" ]] || die "npm accepted the publish but the registry still answers ${PUBLISHED:-nothing} for $PACKAGE_VERSION after 100 seconds"
+[[ "$PUBLISHED" == "$PACKAGE_VERSION" ]] || die "npm accepted the publish but the registry still answers ${PUBLISHED:-nothing} for $PACKAGE_VERSION after 240 seconds"
 say SUCCESS "published $PACKAGE_NAME $PACKAGE_VERSION"
