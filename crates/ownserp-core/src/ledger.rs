@@ -803,6 +803,11 @@ fn file_label(path: &Path) -> String {
         .to_owned()
 }
 
+#[cfg(all(unix, target_os = "linux"))]
+const NO_FOLLOW: i32 = 0o400000;
+#[cfg(all(unix, not(target_os = "linux")))]
+const NO_FOLLOW: i32 = 0x0100;
+
 fn open_ledger_file(path: &Path) -> Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).read(true).append(true);
@@ -810,6 +815,8 @@ fn open_ledger_file(path: &Path) -> Result<File> {
     {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
+        // The open must not follow a symlink planted between the check and this call.
+        options.custom_flags(NO_FOLLOW);
     }
     Ok(options.open(path)?)
 }

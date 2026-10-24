@@ -160,7 +160,7 @@ impl SerperClient {
         serde_json::from_slice(&bytes).ok()
     }
 
-    pub async fn live_balance(&self) -> Option<u64> {
+    pub async fn account_probe(&self) -> Option<(u16, Option<u64>)> {
         let api_key = self.api_key.as_ref().filter(|_| self.attach_key)?;
         let url = format!("{}/account", self.base_for(Host::Google));
         wait_for_permit(&self.limiter).await?;
@@ -172,14 +172,21 @@ impl SerperClient {
             .send()
             .await
             .ok()?;
-        if !response.status().is_success() {
-            return None;
+        let status = response.status().as_u16();
+        if !(200..300).contains(&status) {
+            return Some((status, None));
         }
         let (_, bytes) = read_capped(response).await.ok()?;
         let body: Value = serde_json::from_slice(&bytes).ok()?;
-        body.get("credits")
+        let credits = body
+            .get("credits")
             .or_else(|| body.get("balance"))
-            .and_then(Value::as_u64)
+            .and_then(Value::as_u64);
+        Some((status, credits))
+    }
+
+    pub async fn live_balance(&self) -> Option<u64> {
+        self.account_probe().await.and_then(|(_, credits)| credits)
     }
 
     async fn send_with_retry<F>(
@@ -194,7 +201,11 @@ impl SerperClient {
         let mut attempt = 0u32;
         loop {
             attempt = attempt.saturating_add(1);
-            self.acquire_permits(permits, cancellation).await?;
+            match self.acquire_permits(permits, cancellation).await {
+                Ok(()) => {}
+                Err(_) if attempt == 1 => return Err(Error::CancelledBeforeSend),
+                Err(error) => return Err(error),
+            }
             let sent = tokio::select! {
                 result = build_request().send() => result,
                 () = cancellation.cancelled() => return Err(Error::Cancelled),
@@ -214,6 +225,11 @@ impl SerperClient {
                     if attempt < MAX_ATTEMPTS && retryable_error(&error) {
                         pause(attempt, cancellation).await?;
                         continue;
+                    }
+                    if error.is_connect() {
+                        return Err(Error::ConnectFailed {
+                            message: "the connection was never established".to_owned(),
+                        });
                     }
                     return Err(Error::network("calling Serper", error));
                 }

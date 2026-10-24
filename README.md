@@ -56,7 +56,7 @@ Release archives cover macOS ARM64 and x86_64, Linux x86_64 with glibc, Linux AR
 npx @devops-infinity/ownserp serve
 ```
 
-The package downloads the archive for the current platform on install, checks it against the release checksum, and runs the binary. Node 18 or newer.
+The package downloads the archive for the current platform on install, checks it against the release checksum, and runs the binary. Node 22 or newer.
 
 ### Homebrew
 
@@ -64,7 +64,7 @@ The package downloads the archive for the current platform on install, checks it
 brew install devops-infinity/tap/ownserp
 ```
 
-macOS and Linux both install the release binary.
+macOS and Linux both install the release binary. The tap is updated by hand after each release, so it can lag the release by a few minutes.
 
 ### Shell installer
 
@@ -118,6 +118,8 @@ The image serves Streamable HTTP and refuses a public bind without a bearer toke
 Use the PowerShell installer above, or download `ownserp-x86_64-pc-windows-msvc.zip` from the release page, extract `ownserp.exe`, and put the folder on your PATH. A client configuration that cannot resolve the name uses the absolute path to `ownserp.exe`.
 
 ### MCPB bundle
+
+The bundle carries the Linux x86_64 binary only. On another architecture, install the archive for that platform instead.
 
 Download `ownserp-<version>.mcpb` from the release page and open it in a client that supports MCP Bundles. The bundle asks for the API key and stores it in the OS keychain.
 
@@ -308,7 +310,7 @@ Every tool description in the tool list states the price, so a model can budget 
 
 Every result tool takes `fields`, defaulting to `standard`.
 
-- `minimal` keeps the title, link, and rank. It suits high-volume loops.
+- `minimal` keeps the title, link, and rank, plus the one price, date, rating, or year field that family reports. It suits high-volume loops.
 - `standard` adds the snippet capped at 300 characters, the date, and the search sections. It carries what an agent needs to reason and cite without a second call.
 - `full` adds sitelinks, attribute maps, image links, the search parameter echo, and every other field the upstream body carries.
 
@@ -386,7 +388,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, rate limits before it checks the token, holds at most 128 requests at once, gives each request a 120 second deadline, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, checks the bearer token before it spends the global rate limit, and keeps `/readyz` out of that limiter, holds at most 128 requests at once, derives each request deadline from `request_timeout_secs` and the retry count, and cancels the call when the deadline passes, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
 
 ## Security
 
@@ -417,9 +419,9 @@ cargo install --path crates/ownserp --locked
 tools/verify.sh
 ```
 
-`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a source-only secret scan. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
+`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a secret scan of the tree and of the git history. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
 
-The release build itself runs in `.github/workflows/release.yml` on a macOS runner when a `v*` tag is pushed.
+The release build itself runs in `.github/workflows/release.yml` on a matrix of native runners when a `v*` tag is pushed.
 
 The local lifecycle:
 

@@ -53,6 +53,10 @@ pub enum Error {
     UnknownTool { name: String },
     #[error("request cancelled by the client")]
     Cancelled,
+    #[error("request cancelled before it was sent")]
+    CancelledBeforeSend,
+    #[error("could not reach Serper")]
+    ConnectFailed { message: String },
 }
 
 impl Error {
@@ -88,7 +92,8 @@ impl Error {
             Self::Ledger(_) | Self::LedgerBusy(_) | Self::Io { .. } => "serper.internal_error",
             Self::Json { .. } | Self::Projection(_) => "serper.internal_error",
             Self::UnknownTool { .. } => "serper.tool_not_found",
-            Self::Cancelled => "serper.cancelled",
+            Self::Cancelled | Self::CancelledBeforeSend => "serper.cancelled",
+            Self::ConnectFailed { .. } => "serper.upstream_failed",
         }
     }
 
@@ -96,6 +101,7 @@ impl Error {
         match self {
             Self::Upstream { status, .. } => *status >= 300,
             Self::RateLimited { .. } => true,
+            Self::CancelledBeforeSend | Self::ConnectFailed { .. } => true,
             _ => false,
         }
     }
@@ -145,12 +151,14 @@ impl Error {
                 "Call tools/list and use only the names it returns for this configuration."
             }
             Self::Cancelled => "Call the tool again if the work is still needed.",
+            Self::CancelledBeforeSend => "Call the tool again if the work is still needed.",
+            Self::ConnectFailed { .. } => "Check network reachability, then retry.",
         }
     }
 
     pub fn to_json(&self) -> Value {
-        let message =
-            crate::projection::cap(&crate::projection::sanitize(&self.to_string()), 500).0;
+        let redacted = redact_paths(&self.to_string());
+        let message = crate::projection::cap(&crate::projection::sanitize(&redacted), 500).0;
         let mut body = serde_json::Map::new();
         body.insert("code".to_owned(), json!(self.code()));
         body.insert("message".to_owned(), json!(message));
@@ -204,6 +212,21 @@ impl From<url::ParseError> for Error {
     }
 }
 
+fn redact_paths(text: &str) -> String {
+    text.split(' ')
+        .map(|token| {
+            if token.starts_with('/') || token.starts_with("~/") {
+                let trimmed = token.trim_end_matches([':', ')', ',', '.']);
+                let name = trimmed.rsplit('/').next().unwrap_or(trimmed);
+                token.replace(trimmed, name)
+            } else {
+                token.to_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn redact_url_queries(text: &str) -> String {
     let mut redacted_text = String::with_capacity(text.len());
     let mut rest = text;
@@ -236,6 +259,21 @@ mod tests {
         );
         assert!(text.contains("?<redacted>)"));
         assert!(!text.contains("dhaka"));
+    }
+
+    #[test]
+    fn a_client_facing_message_keeps_only_the_file_name() {
+        let error = Error::Ledger(
+            "hash chain broken at sequence 4 in /home/someone/.local/share/ownserp/ledger/calls.jsonl"
+                .to_owned(),
+        );
+        let body = error.to_json();
+        let message = body
+            .get("message")
+            .and_then(Value::as_str)
+            .expect("message");
+        assert!(!message.contains("/home/"), "{message}");
+        assert!(message.contains("calls.jsonl"), "{message}");
     }
 
     #[test]
