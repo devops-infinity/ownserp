@@ -33,9 +33,7 @@
   },
   "compatibility": {
     "platforms": [
-      "darwin",
-      "linux",
-      "win32"
+      "linux"
     ]
   }
 }
