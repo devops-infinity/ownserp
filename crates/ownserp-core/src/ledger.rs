@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::fs::{File, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -95,8 +95,18 @@ impl Ledger {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent)?;
-            lock_down_dir(parent);
+            let existed = parent.exists();
+            let mut builder = std::fs::DirBuilder::new();
+            builder.recursive(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::DirBuilderExt;
+                builder.mode(0o700);
+            }
+            builder.create(parent)?;
+            if !existed {
+                lock_down_dir(parent)?;
+            }
         }
         let mut seq = 0;
         let mut last_hash = String::from("genesis");
@@ -117,18 +127,35 @@ impl Ledger {
             accumulate(&mut totals, row);
             Ok(())
         })?;
-        let file = OpenOptions::new()
-            .create(true)
-            .read(true)
-            .append(true)
-            .open(&path)?;
+        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
+            if metadata.file_type().is_symlink() {
+                return Err(Error::Ledger(format!(
+                    "{} is a symbolic link; point the ledger at a regular file",
+                    path.display()
+                )));
+            }
+            if !metadata.is_file() {
+                return Err(Error::Ledger(format!(
+                    "{} is not a regular file",
+                    path.display()
+                )));
+            }
+        }
+        let mut options = OpenOptions::new();
+        options.create(true).read(true).append(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(&path)?;
         file.try_lock().map_err(|error| {
             Error::Ledger(format!(
                 "another ownserp process holds {}: {error}",
                 path.display()
             ))
         })?;
-        lock_down_file(&path);
+        lock_down_file(&path)?;
         let stored = file.metadata()?.len();
         if stored > valid_len {
             file.set_len(valid_len)?;
@@ -177,8 +204,14 @@ impl Ledger {
             source: error,
         })?;
         line.push('\n');
+        if line.len() > MAX_LINE_BYTES {
+            return Err(Error::Ledger(format!(
+                "a ledger row of {} bytes passes the {MAX_LINE_BYTES} byte cap",
+                line.len()
+            )));
+        }
         state.file.write_all(line.as_bytes())?;
-        state.file.flush()?;
+        state.file.sync_data()?;
         state.seq = written.seq;
         state.last_hash = written.hash.clone();
         accumulate(&mut state.totals, &written);
@@ -279,6 +312,36 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
     Ok((rows, archive))
 }
 
+fn read_line_capped<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
+    let mut line = Vec::new();
+    loop {
+        let (used, found) = {
+            let available = reader.fill_buf()?;
+            if available.is_empty() {
+                return Ok(if line.is_empty() { None } else { Some(line) });
+            }
+            let found = available.iter().position(|byte| *byte == b'\n');
+            let used = found.map_or(available.len(), |index| index.saturating_add(1));
+            if line.len().saturating_add(used) > MAX_LINE_BYTES {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("a ledger line passes the {MAX_LINE_BYTES} byte cap"),
+                ));
+            }
+            let chunk = match available.get(..used) {
+                Some(chunk) => chunk,
+                None => available,
+            };
+            line.extend_from_slice(chunk);
+            (used, found.is_some())
+        };
+        reader.consume(used);
+        if found {
+            return Ok(Some(line));
+        }
+    }
+}
+
 fn walk_rows<F>(path: &Path, mut visit: F) -> Result<u64>
 where
     F: FnMut(&LedgerRow) -> Result<()>,
@@ -292,14 +355,13 @@ where
     let mut valid_len = 0u64;
     loop {
         buffer.clear();
-        let read = reader.read_until(b'\n', &mut buffer)?;
+        let Some(line) = read_line_capped(&mut reader)? else {
+            break;
+        };
+        let read = line.len();
+        buffer.extend_from_slice(&line);
         if read == 0 {
             break;
-        }
-        if buffer.len() > MAX_LINE_BYTES {
-            return Err(Error::Ledger(format!(
-                "ledger line at byte {consumed} passes the {MAX_LINE_BYTES} byte cap"
-            )));
         }
         consumed = consumed.saturating_add(read as u64);
         let terminated = buffer.last() == Some(&b'\n');
@@ -335,26 +397,36 @@ where
 }
 
 #[cfg(unix)]
-fn lock_down_dir(path: &Path) {
+fn lock_down_dir(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)) {
-        tracing::warn!(path = %path.display(), %error, "could not set owner-only directory permissions");
-    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).map_err(|error| {
+        Error::Ledger(format!(
+            "cannot restrict {} to its owner: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(not(unix))]
-fn lock_down_dir(_path: &Path) {}
+fn lock_down_dir(_path: &Path) -> Result<()> {
+    Ok(())
+}
 
 #[cfg(unix)]
-fn lock_down_file(path: &Path) {
+fn lock_down_file(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
-    if let Err(error) = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)) {
-        tracing::warn!(path = %path.display(), %error, "could not set owner-only file permissions");
-    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).map_err(|error| {
+        Error::Ledger(format!(
+            "cannot restrict {} to its owner: {error}",
+            path.display()
+        ))
+    })
 }
 
 #[cfg(not(unix))]
-fn lock_down_file(_path: &Path) {}
+fn lock_down_file(_path: &Path) -> Result<()> {
+    Ok(())
+}
 
 fn accumulate(totals: &mut Totals, row: &LedgerRow) {
     let credits = u64::from(row.credits_actual.unwrap_or(row.credits_estimated));
@@ -486,8 +558,10 @@ mod tests {
     #[test]
     fn the_ledger_is_owner_only() {
         use std::os::unix::fs::PermissionsExt;
-        let path = temp_path("perms");
-        let _ = std::fs::remove_file(&path);
+        let root =
+            std::env::temp_dir().join(format!("ownserp-ledger-perms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let path = root.join("ledger").join("calls.jsonl");
         let ledger = Ledger::open(&path).expect("ledger");
         let file_mode = std::fs::metadata(&path).expect("stat").permissions().mode() & 0o777;
         let dir_mode = std::fs::metadata(path.parent().expect("parent"))
@@ -499,6 +573,24 @@ mod tests {
         assert_eq!(dir_mode, 0o700);
         drop(ledger);
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_symlinked_ledger_file_is_refused() {
+        use std::os::unix::fs::symlink;
+        let dir = std::env::temp_dir().join(format!("ownserp-ledger-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let target = dir.join("target");
+        std::fs::write(&target, b"x").expect("target");
+        let link = dir.join("calls.jsonl");
+        symlink(&target, &link).expect("link");
+        assert!(
+            Ledger::open(&link).is_err(),
+            "a symbolic link must be refused"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

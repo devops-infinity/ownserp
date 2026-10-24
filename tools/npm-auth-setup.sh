@@ -46,12 +46,18 @@ umask 077
 SCRATCH="$(mktemp)"
 trap 'rm -f "$SCRATCH"' EXIT
 if [[ -f "$NPMRC" ]]; then
-	grep -v "^${KEY}" "$NPMRC" >"$SCRATCH" || true
+	grep -vF "$KEY" "$NPMRC" >"$SCRATCH" || true
 fi
 printf '%s%s\n' "$KEY" "$TOKEN" >>"$SCRATCH"
+chmod 600 "$SCRATCH"
+set +e
+WHO="$(NPM_CONFIG_USERCONFIG="$SCRATCH" npm whoami 2>&1)"
+STATUS=$?
+set -e
+unset TOKEN
+if [[ "$STATUS" -ne 0 ]]; then
+	die "the token was not accepted, so $NPMRC is unchanged: $WHO"
+fi
 mv "$SCRATCH" "$NPMRC"
 chmod 600 "$NPMRC"
-unset TOKEN
-
-WHO="$(npm whoami 2>&1)" || die "the token was written but npm cannot use it: $WHO"
 say SUCCESS "npm authenticated as $WHO; publishing no longer needs a one-time code"

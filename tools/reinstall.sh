@@ -78,7 +78,10 @@ fi
 
 [[ -x "$BINARY" ]] || die "the build did not produce $BINARY"
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$BINARY" "$INSTALL_DIR/ownserp"
+INSTALL_TMP="$INSTALL_DIR/.ownserp.new.$$"
+trap 'rm -f -- "${INSTALL_TMP:-}"' EXIT
+install -m 0755 "$BINARY" "$INSTALL_TMP"
+mv -f -- "$INSTALL_TMP" "$INSTALL_DIR/ownserp"
 say SUCCESS "installed $("$INSTALL_DIR/ownserp" --version) to $INSTALL_DIR/ownserp"
 
 case ":$PATH:" in

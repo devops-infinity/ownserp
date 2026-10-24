@@ -55,16 +55,29 @@ impl ToolContext {
 fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     let dir = ledger_dir.parent().unwrap_or(ledger_dir);
     let path = dir.join("args.key");
-    if let Ok(bytes) = std::fs::read(&path)
-        && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
-    {
-        return Ok(key);
+    match std::fs::read(&path) {
+        Ok(bytes) => {
+            return <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| {
+                Error::Config(format!(
+                    "{} is {} bytes, not the 32-byte arguments key; restore it or remove it on purpose to start a new ledger chain",
+                    path.display(),
+                    bytes.len()
+                ))
+            });
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(Error::Config(format!(
+                "cannot read {}: {error}",
+                path.display()
+            )));
+        }
     }
     let mut key = [0u8; 32];
     getrandom::fill(&mut key).map_err(|error| Error::Config(format!("os random: {error}")))?;
     std::fs::create_dir_all(dir)?;
     let mut options = std::fs::OpenOptions::new();
-    options.write(true).create(true).truncate(true);
+    options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -199,8 +212,16 @@ async fn execute_search(
             let raw = match ctx.client.post(endpoint, &body, cancellation).await {
                 Ok(raw) => raw,
                 Err(error) => {
-                    record_failure(ctx, endpoint.tool_name(), &body, credits, started, &error)
-                        .await;
+                    record_failure(
+                        ctx,
+                        endpoint.tool_name(),
+                        endpoint.path(),
+                        &body,
+                        credits,
+                        started,
+                        &error,
+                    )
+                    .await;
                     return Err(error);
                 }
             };
@@ -217,9 +238,6 @@ async fn execute_search(
         reported_credits.unwrap_or(credits)
     };
     let prepared: Result<(Value, usize, Option<String>, Option<String>)> = (|| {
-        if cacheable && cache_age.is_none() {
-            ctx.cache.put(key, raw.as_ref().clone())?;
-        }
         let projection = project(endpoint, &raw, preset)?;
         Ok((
             projection.envelope,
@@ -229,9 +247,14 @@ async fn execute_search(
         ))
     })();
     let (envelope, results, top_title, next_token) = match prepared {
-        Ok(value) => value,
+        Ok(value) => {
+            if cacheable && cache_age.is_none() {
+                ctx.cache.put(key, raw.as_ref().clone())?;
+            }
+            value
+        }
         Err(error) => {
-            append_call_record(
+            record_call(
                 ctx,
                 CallRecord {
                     tool: endpoint.tool_name().to_owned(),
@@ -248,7 +271,7 @@ async fn execute_search(
                     cache_hit: cache_age.is_some(),
                 },
             )
-            .await?;
+            .await;
             return Err(error);
         }
     };
@@ -257,14 +280,18 @@ async fn execute_search(
     let emitted = serde_json::to_vec(&fitted)?.len();
     let tokens = (emitted / 4) as u64;
     let saved = ((baseline / 4) as u64).saturating_sub(tokens);
-    append_call_record(
+    record_call(
         ctx,
         CallRecord {
             tool: endpoint.tool_name().to_owned(),
             endpoint: endpoint.path().to_owned(),
             args_hash: args_hash(ctx.hash_key.as_ref(), &body),
             credits_estimated: if cache_age.is_some() { 0 } else { credits },
-            credits_actual: reported_credits,
+            credits_actual: if cache_age.is_some() {
+                None
+            } else {
+                reported_credits
+            },
             batch_multiplier: 1,
             duration_ms: elapsed_ms(started),
             status: if cache_age.is_some() { "cache" } else { "ok" }.to_owned(),
@@ -274,7 +301,7 @@ async fn execute_search(
             cache_hit: cache_age.is_some(),
         },
     )
-    .await?;
+    .await;
     let cost = cost_info(ctx, charged, cache_age)?;
     let mut fitted = fitted;
     set_cost(&mut fitted, &cost)?;
@@ -284,6 +311,7 @@ async fn execute_search(
             let mut line =
                 projection::summary_text(results, top_title.as_deref(), charged, cost.usd);
             if let Some(token) = next_token.as_deref() {
+                let token = crate::projection::cap(&crate::projection::sanitize(token), 64).0;
                 line.push_str(&format!("; next page token: {token}"));
             }
             if cache_age.is_some() {
@@ -543,7 +571,16 @@ async fn scrape(
     let raw = match ctx.client.post(Endpoint::Scrape, &body, cancellation).await {
         Ok(raw) => raw,
         Err(error) => {
-            record_failure(ctx, "serper_scrape", &body, credits, started, &error).await;
+            record_failure(
+                ctx,
+                "serper_scrape",
+                Endpoint::Scrape.path(),
+                &body,
+                credits,
+                started,
+                &error,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -564,7 +601,7 @@ async fn scrape(
     let mut value = serde_json::to_value(&output)?;
     value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
     let serialized = serde_json::to_vec(&value)?;
-    append_call_record(
+    record_call(
         ctx,
         CallRecord {
             tool: "serper_scrape".to_owned(),
@@ -581,7 +618,7 @@ async fn scrape(
             cache_hit: false,
         },
     )
-    .await?;
+    .await;
     let cost = cost_info(ctx, actual, None)?;
     let mut value = value;
     set_cost(&mut value, &cost)?;
@@ -615,7 +652,7 @@ async fn locations(
     let items = projection::locations(&raw);
     let top = items.first().and_then(|item| item.canonical_name.clone());
     let mut envelope = serde_json::to_value(Envelope::new(items, placeholder_cost()))?;
-    append_call_record(
+    record_call(
         ctx,
         CallRecord {
             tool: "serper_locations".to_owned(),
@@ -640,7 +677,7 @@ async fn locations(
             cache_hit: false,
         },
     )
-    .await?;
+    .await;
     let cost = cost_info(ctx, 0, None)?;
     set_cost(&mut envelope, &cost)?;
     let text = projection::summary_text(result_count(&envelope), top.as_deref(), 0, 0.0);
@@ -667,11 +704,23 @@ async fn batch(
         .saturating_mul(BATCH_MULTIPLIER);
     let _reservation = reserve_budget(ctx, total)?;
     let body = Value::Array(bodies);
+    ctx.client
+        .acquire_queries(args.queries.len(), cancellation)
+        .await?;
     let started = Instant::now();
     let raw = match ctx.client.post(endpoint, &body, cancellation).await {
         Ok(raw) => raw,
         Err(error) => {
-            record_failure(ctx, "serper_search_batch", &body, total, started, &error).await;
+            record_failure(
+                ctx,
+                "serper_search_batch",
+                endpoint.path(),
+                &body,
+                total,
+                started,
+                &error,
+            )
+            .await;
             return Err(error);
         }
     };
@@ -687,16 +736,26 @@ async fn batch(
                         .and_then(|params| params.get("q"))
                         .and_then(Value::as_str)
                         .map(crate::projection::sanitize);
-                    let results = match project(endpoint, item, preset) {
-                        Ok(projection) => projection
-                            .envelope
-                            .get("results")
-                            .and_then(Value::as_array)
-                            .cloned()
-                            .unwrap_or_default(),
-                        Err(_) => Vec::new(),
+                    let (results, error) = match project(endpoint, item, preset) {
+                        Ok(projection) => (
+                            projection
+                                .envelope
+                                .get("results")
+                                .and_then(Value::as_array)
+                                .cloned()
+                                .unwrap_or_default(),
+                            None,
+                        ),
+                        Err(error) => (
+                            Vec::new(),
+                            Some(crate::projection::cap(&error.to_string(), 300).0),
+                        ),
                     };
-                    BatchEntry { query, results }
+                    BatchEntry {
+                        query,
+                        results,
+                        error,
+                    }
                 })
                 .collect::<Vec<_>>()
         })
@@ -709,7 +768,7 @@ async fn batch(
     let mut value = serde_json::to_value(&output)?;
     value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
     let serialized = serde_json::to_vec(&value)?;
-    append_call_record(
+    record_call(
         ctx,
         CallRecord {
             tool: "serper_search_batch".to_owned(),
@@ -726,7 +785,7 @@ async fn batch(
             cache_hit: false,
         },
     )
-    .await?;
+    .await;
     let cost = cost_info(ctx, total, None)?;
     let mut value = value;
     set_cost(&mut value, &cost)?;
@@ -751,9 +810,9 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
     let status = body
         .get("status")
         .and_then(Value::as_str)
-        .map(crate::projection::sanitize);
-    let info = body.get("info").cloned();
-    append_call_record(
+        .map(|raw| crate::projection::cap(&crate::projection::sanitize(raw), 64).0);
+    let info = body.get("info").map(crate::projection::sanitize_value);
+    record_call(
         ctx,
         CallRecord {
             tool: "serper_health".to_owned(),
@@ -770,13 +829,14 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
             cache_hit: false,
         },
     )
-    .await?;
+    .await;
     let output = HealthOutput {
         status: status.clone(),
         info,
         cost: cost_info(ctx, 0, None)?,
     };
     let value = serde_json::to_value(&output)?;
+    let value = projection::fit_to_budget(value, projection::MAX_RESULT_BYTES);
     let text = format!("service status: {}", status.as_deref().unwrap_or("unknown"));
     Ok(tool_result(value, text))
 }
@@ -871,9 +931,16 @@ async fn append_call_record(ctx: &ToolContext, call_record: CallRecord) -> Resul
         .map_err(|error| Error::Ledger(error.to_string()))?
 }
 
+async fn record_call(ctx: &ToolContext, call_record: CallRecord) {
+    if let Err(error) = append_call_record(ctx, call_record).await {
+        tracing::error!(%error, "a completed call could not be written to the ledger");
+    }
+}
+
 async fn record_failure(
     ctx: &ToolContext,
     tool: &str,
+    endpoint: &str,
     body: &Value,
     credits: u32,
     started: Instant,
@@ -881,7 +948,7 @@ async fn record_failure(
 ) {
     let call_record = CallRecord {
         tool: tool.to_owned(),
-        endpoint: tool.trim_start_matches("serper_").to_owned(),
+        endpoint: endpoint.to_owned(),
         args_hash: args_hash(ctx.hash_key.as_ref(), body),
         credits_estimated: credits,
         credits_actual: None,

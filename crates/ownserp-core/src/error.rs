@@ -129,9 +129,11 @@ impl Error {
     }
 
     pub fn to_json(&self) -> Value {
+        let message =
+            crate::projection::cap(&crate::projection::sanitize(&self.to_string()), 500).0;
         json!({
             "code": self.code(),
-            "message": self.to_string(),
+            "message": message,
             "remedy": self.remedy(),
         })
     }
@@ -140,7 +142,7 @@ impl Error {
         let mut chain = Vec::new();
         let mut current: Option<&(dyn StdError + 'static)> = self.source();
         while let Some(error) = current {
-            chain.push(error.to_string());
+            chain.push(redact_url_queries(&error.to_string()));
             current = error.source();
         }
         chain
@@ -171,9 +173,39 @@ impl From<url::ParseError> for Error {
     }
 }
 
+fn redact_url_queries(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(query) = rest.find('?') {
+        if !rest.get(..query).is_some_and(|head| head.contains("://")) {
+            result.push_str(rest.get(..=query).unwrap_or_default());
+            rest = rest.get(query.saturating_add(1)..).unwrap_or_default();
+            continue;
+        }
+        result.push_str(rest.get(..query).unwrap_or_default());
+        result.push_str("?<redacted>");
+        let tail = rest.get(query.saturating_add(1)..).unwrap_or_default();
+        let end = tail
+            .find(|ch: char| ch.is_whitespace() || ch == ')')
+            .unwrap_or(tail.len());
+        rest = tail.get(end..).unwrap_or_default();
+    }
+    result.push_str(rest);
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_error_text_redacts_a_url_query() {
+        let text = redact_url_queries(
+            "error sending request for url (https://api.serper.dev/locations?q=dhaka&limit=3)",
+        );
+        assert!(text.contains("?<redacted>)"));
+        assert!(!text.contains("dhaka"));
+    }
 
     #[test]
     fn a_wrapped_error_keeps_its_cause_off_the_display_line() {

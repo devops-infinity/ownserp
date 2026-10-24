@@ -353,7 +353,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB, holds at most 128 requests at once, gives each request a 300 second deadline, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS`.
 
 ## Security
 
@@ -393,7 +393,7 @@ The local lifecycle:
 - `tools/publish-npm.sh` publishes the npm package; `tools/npm-auth-setup.sh` stores the token that makes it OTP-free.
 - `tools/install-hooks.sh` points git at the local hooks: a secret scan before each commit and the full gate before each push.
 - [RELEASING.md](RELEASING.md) is the release runbook.
-- `benchmarks/compare.py` benchmarks the live tool surface against the Python Serper MCP server, and `benchmarks/report.md` records the measured result.
+- [docs/benchmark.md](docs/benchmark.md) compares the live tool surface with the Python Serper MCP server and records the measured result.
 
 ## Distribution
 

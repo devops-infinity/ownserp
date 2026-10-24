@@ -9,15 +9,38 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 ### Added
 
 - `serper_health`, a free tool that reports the status of the Serper API.
-- A benchmark harness and a comparison report against the Python Serper MCP server.
+- A benchmark comparison against the Python Serper MCP server.
+
+### Changed
+
+- The npm loader pins the archive SHA-256 inside the published package, accepts redirects only to GitHub release hosts, downloads with a deadline, and extracts into a temporary directory before moving the binary into place.
+- The batch tool takes one rate-limit permit per query, and a query whose response cannot be read now carries an error marker instead of an empty result.
+- A retry covers a failed connect only. A timeout can follow a request the upstream already billed, so it is reported instead of repeated.
+- The upstream client refuses a redirect, so the API key cannot follow one to another host.
 
 ### Fixed
 
+- A cache hit no longer adds the reported credits to the session totals.
+- An upstream body is cached only after it projects cleanly, so a malformed body is not replayed for the life of the entry.
+- The cache subtracts the bytes of a replaced entry, so its byte cap stays accurate.
+- Health and balance bodies read through the 4 MiB cap.
+- The result budget shrinks nested strings and arrays and keeps the essential fields when a result still passes the cap.
 - Patents results read the `organic` array that Serper returns.
 - Actual credits from every response are recorded in the cost object and the ledger.
 - Places and maps return `fid` and `placeId`, so a review lookup can follow a result, and maps reads `phoneNumber`.
 - Shopping returns rating and product id, scholar returns the pdf link and cluster id, patents returns inventor, language, publication date, and figures, lens returns the image, and images and videos return the missing media fields.
 - The public documentation carries no personal branch prefix or npm username.
+- The ledger reads a line with a byte cap, refuses to write an oversized row, syncs each row to disk, sets owner-only permissions when the directory and file are created, and logs an append failure instead of failing a call that already spent credits.
+- An unreadable or wrong-length `args.key` stops the server with a message instead of being replaced silently.
+- The HTTP server holds at most 128 requests at once, gives each one a 300 second deadline, rate-limits before the bearer check, and compares tokens by digest.
+- The commit hook fails when the secret scanner is missing, and both gates use the same `.gitleaks.toml`.
+- A URL query in an error message is redacted before it reaches a log or a tool error.
+- The sanitizer also strips line and paragraph separators, the variation selector supplement, and the Unicode fillers, and a cleaned key collision keeps the first value.
+- The one-line text summary caps its title and page token, so it cannot pass the result budget.
+- The release script verifies that every version stamp landed and cleans its temporary files.
+- The npm token setup checks the new token before replacing the working one.
+- `.dockerignore` excludes environment and key files.
+- The reinstall script swaps the binary by rename, so an interrupted install leaves the previous copy in place.
 
 ## [0.1.2] - 2026-10-24
 

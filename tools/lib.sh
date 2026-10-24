@@ -56,6 +56,32 @@ sha256_of() {
 	fi
 }
 
+verify_version_stamps() {
+	local root="$1" want="$2" ok=0 file actual
+	actual="$(workspace_version "$root")"
+	if [[ "$actual" != "$want" ]]; then
+		warn "Cargo.toml reports $actual"
+		ok=1
+	fi
+	for file in server.json mcpb/manifest.json packages/npm/package.json; do
+		[[ -f "$root/$file" ]] || continue
+		actual="$(jq -r .version "$root/$file")"
+		if [[ "$actual" != "$want" ]]; then
+			warn "$file reports $actual"
+			ok=1
+		fi
+	done
+	if [[ -f "$root/packages/npm/bin/ownserp.js" ]] && ! grep -q "const VERSION = \"$want\";" "$root/packages/npm/bin/ownserp.js"; then
+		warn "packages/npm/bin/ownserp.js does not report $want"
+		ok=1
+	fi
+	if [[ -f "$root/Dockerfile" ]] && ! grep -q "org.opencontainers.image.version=\"$want\"" "$root/Dockerfile"; then
+		warn "Dockerfile does not label $want"
+		ok=1
+	fi
+	[[ "$ok" -eq 0 ]] || die "the version stamp did not reach every file for $want"
+}
+
 host_target() {
 	rustc -vV | awk '/^host:/{print $2}'
 }

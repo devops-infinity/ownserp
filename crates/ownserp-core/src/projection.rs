@@ -22,10 +22,25 @@ fn is_invisible(ch: char) -> bool {
             | '\u{2060}'..='\u{206F}'
             | '\u{FEFF}'
             | '\u{FE00}'..='\u{FE0F}'
+            | '\u{180B}'..='\u{180F}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{17B4}'
+            | '\u{17B5}'
+            | '\u{2800}'
+            | '\u{3164}'
             | '\u{E0000}'..='\u{E007F}'
+            | '\u{E0100}'..='\u{E01EF}'
     ) || matches!(
         ch,
-        '\u{061C}' | '\u{180E}' | '\u{FFF9}'..='\u{FFFB}' | '\u{1D173}'..='\u{1D17A}'
+        '\u{061C}'
+            | '\u{2028}'
+            | '\u{2029}'
+            | '\u{FFA0}'
+            | '\u{180E}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{1D173}'..='\u{1D17A}'
     ) || (ch.is_control() && ch != '\n' && ch != '\t')
 }
 
@@ -33,11 +48,16 @@ pub(crate) fn sanitize_value(value: &Value) -> Value {
     match value {
         Value::String(text) => Value::String(sanitize(text)),
         Value::Array(items) => Value::Array(items.iter().map(sanitize_value).collect()),
-        Value::Object(map) => Value::Object(
-            map.iter()
-                .map(|(key, item)| (sanitize(key), sanitize_value(item)))
-                .collect(),
-        ),
+        Value::Object(map) => {
+            let mut cleaned = serde_json::Map::new();
+            for (key, item) in map {
+                let key = sanitize(key);
+                if !cleaned.contains_key(&key) {
+                    cleaned.insert(key, sanitize_value(item));
+                }
+            }
+            Value::Object(cleaned)
+        }
         other => other.clone(),
     }
 }
@@ -296,7 +316,7 @@ pub(crate) fn places(raw: &Value, preset: Preset) -> (Vec<PlaceItem>, bool) {
                 _ => text_field(value, "fid"),
             },
             opening_hours: match preset {
-                Preset::Full => value.get("openingHours").cloned(),
+                Preset::Full => value.get("openingHours").map(sanitize_value),
                 _ => None,
             },
             thumbnail_url: match preset {
@@ -440,7 +460,10 @@ pub(crate) fn scholar(raw: &Value, preset: Preset) -> (Vec<ScholarItem>, bool) {
                 _ => None,
             },
             versions: match preset {
-                Preset::Full => value.get("versions").and_then(Value::as_array).cloned(),
+                Preset::Full => value
+                    .get("versions")
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().map(sanitize_value).collect()),
                 _ => None,
             },
             position: integer_field(value, "position"),
@@ -495,7 +518,10 @@ pub(crate) fn patents(raw: &Value, preset: Preset) -> (Vec<PatentItem>, bool) {
                 Preset::Minimal => None,
             },
             figures: match preset {
-                Preset::Full => value.get("figures").and_then(Value::as_array).cloned(),
+                Preset::Full => value
+                    .get("figures")
+                    .and_then(Value::as_array)
+                    .map(|items| items.iter().map(sanitize_value).collect()),
                 _ => None,
             },
             position: integer_field(value, "position"),
@@ -785,7 +811,75 @@ pub fn fit_to_budget(mut envelope: Value, max_bytes: usize) -> Value {
     if !fits_budget(&envelope, max_bytes) {
         shrink_text(&mut envelope, max_bytes);
     }
+    if !fits_budget(&envelope, max_bytes) {
+        let string_budget = (max_bytes / 64).max(256);
+        shrink_values(&mut envelope, string_budget, 20);
+    }
+    if !fits_budget(&envelope, max_bytes) {
+        keep_essential(&mut envelope);
+    }
+    if !fits_budget(&envelope, max_bytes) {
+        truncate_array(&mut envelope, "results", 0);
+        truncate_array(&mut envelope, "entries", 0);
+        if let Some(markdown) = envelope.get_mut("markdown") {
+            *markdown = Value::String(String::new());
+        }
+        if let Some(text) = envelope.get_mut("text") {
+            *text = Value::String(String::new());
+        }
+    }
+    if !fits_budget(&envelope, max_bytes) {
+        let cost = envelope.get("cost").cloned();
+        let mut minimal = serde_json::Map::new();
+        minimal.insert("truncated".to_owned(), Value::Bool(true));
+        if let Some(cost) = cost {
+            minimal.insert("cost".to_owned(), cost);
+        }
+        envelope = Value::Object(minimal);
+    }
     envelope
+}
+
+fn shrink_values(value: &mut Value, string_budget: usize, item_budget: usize) {
+    match value {
+        Value::String(text) => {
+            if text.chars().count() > string_budget {
+                let capped: String = text.chars().take(string_budget).collect::<String>() + "...";
+                *text = capped;
+            }
+        }
+        Value::Array(items) => {
+            items.truncate(item_budget);
+            for item in items.iter_mut() {
+                shrink_values(item, string_budget, item_budget);
+            }
+        }
+        Value::Object(map) => {
+            for item in map.values_mut() {
+                shrink_values(item, string_budget, item_budget);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn keep_essential(value: &mut Value) {
+    const KEEP: [&str; 10] = [
+        "results",
+        "entries",
+        "cost",
+        "truncated",
+        "status",
+        "markdown",
+        "text",
+        "title",
+        "credits",
+        "info",
+    ];
+    if let Some(map) = value.as_object_mut() {
+        map.retain(|key, _| KEEP.contains(&key.as_str()));
+        map.insert("truncated".to_owned(), Value::Bool(true));
+    }
 }
 
 fn fits_budget(value: &Value, max_bytes: usize) -> bool {
@@ -825,13 +919,42 @@ fn shrink_text(value: &mut Value, max_bytes: usize) {
 }
 
 pub fn summary_text(results: usize, top_title: Option<&str>, credits: u32, usd: f64) -> String {
-    let top = top_title.unwrap_or("no title");
+    let top = cap(top_title.unwrap_or("no title"), 160).0;
     format!("{results} results; top: {top}; cost: {credits} credits (${usd:.6})")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_budget_shrinks_nested_strings_and_arrays() {
+        let big = "x".repeat(4096);
+        let value = serde_json::json!({
+            "results": [{"title": big, "attributes": {"k": big}}],
+            "cost": {"credits": 1}
+        });
+        let fitted = fit_to_budget(value, 2048);
+        let size = serde_json::to_vec(&fitted).expect("serialize").len();
+        assert!(size <= 2048, "fitted size was {size}");
+    }
+
+    #[test]
+    fn the_budget_keeps_a_hard_cap_on_a_wide_object() {
+        let mut info = serde_json::Map::new();
+        for index in 0..200 {
+            info.insert(format!("k{index}"), Value::String("y".repeat(200)));
+        }
+        let value = serde_json::json!({
+            "status": "ok",
+            "info": info,
+            "cost": {"credits": 0}
+        });
+        let fitted = fit_to_budget(value, 4096);
+        let size = serde_json::to_vec(&fitted).expect("serialize").len();
+        assert!(size <= 4096, "fitted size was {size}");
+        assert_eq!(fitted.get("truncated").and_then(Value::as_bool), Some(true));
+    }
 
     #[test]
     fn cap_marks_the_clipped_string() {
@@ -850,6 +973,21 @@ mod tests {
         assert!(truncated);
         assert_eq!(capped.chars().count(), 303);
         assert!(capped.ends_with("..."));
+    }
+
+    #[test]
+    fn sanitize_strips_separators_and_variation_supplements() {
+        let text = sanitize("a\u{2028}b\u{E0100}c\u{180B}d");
+        assert!(!text.contains('\u{2028}'));
+        assert!(!text.contains('\u{E0100}'));
+        assert!(!text.contains('\u{180B}'));
+    }
+
+    #[test]
+    fn a_key_collision_keeps_the_first_value() {
+        let value: Value = serde_json::from_str(r#"{"a":1,"a\u200B":2}"#).expect("json");
+        let cleaned = sanitize_value(&value);
+        assert_eq!(cleaned.get("a").and_then(Value::as_u64), Some(1));
     }
 
     #[test]

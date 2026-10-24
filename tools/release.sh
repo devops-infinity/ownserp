@@ -14,7 +14,16 @@ DRY_RUN=0
 MAKE_TAG=0
 DIST_DIR="$REPO/dist"
 STAGE=""
-trap 'if [[ -n "$STAGE" ]]; then rm -rf "$STAGE"; fi' EXIT
+TEMP_FILES=()
+cleanup() {
+	if [[ -n "$STAGE" ]]; then
+		rm -rf "$STAGE"
+	fi
+	if ((${#TEMP_FILES[@]})); then
+		rm -f -- "${TEMP_FILES[@]}"
+	fi
+}
+trap cleanup EXIT
 
 usage() {
 	cat <<'USAGE'
@@ -116,20 +125,24 @@ require_clean_tree() {
 }
 
 set_manifest_version() {
-	local file="$1" version="$2"
+	local file="$1" version="$2" tmp
 	[[ -f "$file" ]] || die "missing $file"
-	jq --arg version "$version" '.version = $version | (.packages[]?.version) = $version' "$file" >"$file.tmp"
-	mv "$file.tmp" "$file"
+	tmp="$(mktemp "$(dirname -- "$file")/.stamp.XXXXXX")"
+	TEMP_FILES+=("$tmp")
+	jq --arg version "$version" '.version = $version | (.packages[]?.version) = $version' "$file" >"$tmp"
+	mv "$tmp" "$file"
 }
 
 insert_changelog_heading() {
-	local version="$1" date="$2"
+	local version="$1" date="$2" tmp
+	tmp="$(mktemp "$(dirname -- CHANGELOG.md)/.stamp.XXXXXX")"
+	TEMP_FILES+=("$tmp")
 	awk -v heading="## [$version] - $date" '
 		!done && /^## \[/ { print heading; print ""; done=1 }
 		{ print }
 		END { if (!done) { print ""; print heading; print "" } }
-	' CHANGELOG.md >CHANGELOG.md.tmp
-	mv CHANGELOG.md.tmp CHANGELOG.md
+	' CHANGELOG.md >"$tmp"
+	mv "$tmp" CHANGELOG.md
 }
 
 changelog_has_entries() {
@@ -168,6 +181,7 @@ prepare() {
 		rm -f packages/npm/bin/ownserp.js.bak
 	fi
 	insert_changelog_heading "$new" "$date"
+	verify_version_stamps "$REPO" "$new"
 	say SUCCESS "prepared $new"
 	say INFO "next: write the CHANGELOG entries, commit on a release branch, and merge into main"
 }
@@ -189,12 +203,11 @@ package() {
 	stage="$STAGE"
 	install -m 0755 target/release/ownserp "$stage/ownserp"
 	cp README.md CHANGELOG.md LICENSE-MIT LICENSE-APACHE server.json "$stage/"
-	mkdir -p "$stage/mcpb"
-	cp mcpb/manifest.json "$stage/mcpb/manifest.json"
 	tar -czf "$archive" -C "$stage" .
 	sha256_of "$archive" >"$archive.sha256"
 	say SUCCESS "wrote $archive"
 	say SUCCESS "wrote $archive.sha256"
+	say INFO "tools/publish-npm.sh pins this digest into the npm loader before publishing"
 	if [[ "$MAKE_TAG" -eq 1 ]]; then
 		git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
 		if [[ -n "$(git config user.signingkey || true)" ]]; then

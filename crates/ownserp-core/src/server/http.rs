@@ -21,6 +21,8 @@ use rmcp::transport::StreamableHttpService;
 use rmcp::transport::streamable_http_server::session::never::NeverSessionManager;
 use secrecy::ExposeSecret;
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use tokio::sync::Semaphore;
 use tracing::Instrument;
 
 use super::{Metrics, OwnserpHandler, shutdown_signal};
@@ -30,6 +32,8 @@ use crate::error::{Error, Result};
 const MAX_BODY_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_ID: usize = 128;
 const MIN_TOKEN_CHARS: usize = 32;
+const MAX_CONCURRENT_REQUESTS: usize = 128;
+const REQUEST_TIMEOUT_SECS: u64 = 300;
 
 type HttpLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 
@@ -38,6 +42,7 @@ struct HttpState {
     tokens: Arc<Vec<secrecy::SecretString>>,
     metrics: Arc<Metrics>,
     limiter: Option<Arc<HttpLimiter>>,
+    gate: Arc<Semaphore>,
     request_seq: Arc<AtomicU64>,
     ready: bool,
     ready_message: Arc<str>,
@@ -46,8 +51,9 @@ struct HttpState {
 
 pub async fn serve_http(settings: Settings) -> Result<()> {
     let tokens = settings.bearer_tokens().to_vec();
+    let tokens_configured = !tokens.is_empty();
     let bind = settings.bind().to_owned();
-    if tokens.is_empty() && !is_loopback(&bind) {
+    if !tokens_configured && !is_loopback(&bind) {
         return Err(Error::Config(
             "OWN_SERPER_BEARER_TOKENS is required when bind is not a loopback address".into(),
         ));
@@ -90,6 +96,7 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         tokens: Arc::new(tokens),
         metrics,
         limiter,
+        gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         request_seq: Arc::new(AtomicU64::new(0)),
         ready,
         ready_message,
@@ -100,13 +107,14 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .route("/metrics", get(metrics_handler))
         .fallback_service(service)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            limit_requests,
-        ))
+        .layer(middleware::from_fn_with_state(state.clone(), gate_requests))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            limit_requests,
         ))
         .layer(middleware::from_fn_with_state(state.clone(), require_host))
         .layer(middleware::from_fn_with_state(
@@ -121,6 +129,16 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
         .map_err(|error| Error::Config(format!("bind {bind}: {error}")))?;
+    if !tokens_configured
+        && !listener
+            .local_addr()
+            .map(|address| address.ip().is_loopback())
+            .unwrap_or(false)
+    {
+        return Err(Error::Config(format!(
+            "{bind} resolved to a non-loopback address; set OWN_SERPER_BEARER_TOKENS before serving beyond this machine"
+        )));
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
@@ -170,10 +188,9 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
 }
 
 async fn limit_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
-    let Some(limiter) = state.limiter.as_ref() else {
-        return next.run(request).await;
-    };
-    if limiter.check().is_err() {
+    if let Some(limiter) = state.limiter.as_ref()
+        && limiter.check().is_err()
+    {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [(RETRY_AFTER, "1")],
@@ -182,6 +199,26 @@ async fn limit_requests(State(state): State<HttpState>, request: Request, next: 
             .into_response();
     }
     next.run(request).await
+}
+
+async fn gate_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
+    let Ok(_permit) = state.gate.clone().try_acquire_owned() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            [(RETRY_AFTER, "1")],
+            "server busy",
+        )
+            .into_response();
+    };
+    match tokio::time::timeout(
+        std::time::Duration::from_secs(REQUEST_TIMEOUT_SECS),
+        next.run(request),
+    )
+    .await
+    {
+        Ok(response) => response,
+        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "request deadline passed").into_response(),
+    }
 }
 
 async fn assign_request_id(
@@ -252,7 +289,7 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
         state
             .tokens
             .iter()
-            .any(|expected| constant_time_eq(token.as_bytes(), expected.expose_secret().as_bytes()))
+            .any(|expected| token_matches(token, expected.expose_secret()))
     });
     if accepted {
         next.run(request).await
@@ -274,6 +311,12 @@ fn unix_nanos() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_nanos())
         .unwrap_or(0)
+}
+
+fn token_matches(presented: &str, expected: &str) -> bool {
+    let left = Sha256::digest(presented.as_bytes());
+    let right = Sha256::digest(expected.as_bytes());
+    constant_time_eq(&left, &right)
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -336,6 +379,7 @@ mod tests {
             ),
             metrics: Arc::new(Metrics::default()),
             limiter,
+            gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             request_seq: Arc::new(AtomicU64::new(0)),
             ready: true,
             ready_message: Arc::from("ready"),

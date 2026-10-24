@@ -429,6 +429,34 @@ async fn a_cache_hit_costs_nothing_and_says_so() {
 }
 
 #[tokio::test]
+async fn a_reported_credit_count_is_not_charged_again_on_a_cache_hit() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "credits": 2,
+            "organic": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    let ctx = context("cache-credits", &server.uri(), 60);
+    let args = arguments(json!({"q": "apple inc"}));
+    for _ in 0..2 {
+        call_tool(
+            &ctx,
+            "serper_search",
+            Some(&args),
+            &CancellationToken::new(),
+        )
+        .await;
+    }
+    let totals = ctx.ledger.totals().expect("totals");
+    assert_eq!(totals.cache_hits, 1);
+    assert_eq!(totals.credits, 2);
+}
+
+#[tokio::test]
 async fn locations_are_free_and_unauthenticated() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

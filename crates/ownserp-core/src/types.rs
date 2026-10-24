@@ -54,6 +54,11 @@ impl TryFrom<String> for MapViewport {
 
     fn try_from(raw: String) -> Result<Self, Self::Error> {
         let trimmed = raw.trim();
+        if trimmed.len() > 64 {
+            return Err(Error::InvalidArgs(
+                "ll is longer than 64 bytes; it takes latitude,longitude,zoom".into(),
+            ));
+        }
         let mut parts = trimmed.split(',');
         let lat = parts
             .next()
@@ -147,25 +152,25 @@ impl From<LocationQuery> for String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub enum TimeFilter {
     #[serde(rename = "qdr:h")]
-    PastHour,
+    Hour,
     #[serde(rename = "qdr:d")]
-    PastDay,
+    Day,
     #[serde(rename = "qdr:w")]
-    PastWeek,
+    Week,
     #[serde(rename = "qdr:m")]
-    PastMonth,
+    Month,
     #[serde(rename = "qdr:y")]
-    PastYear,
+    Year,
 }
 
 impl TimeFilter {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::PastHour => "qdr:h",
-            Self::PastDay => "qdr:d",
-            Self::PastWeek => "qdr:w",
-            Self::PastMonth => "qdr:m",
-            Self::PastYear => "qdr:y",
+            Self::Hour => "qdr:h",
+            Self::Day => "qdr:d",
+            Self::Week => "qdr:w",
+            Self::Month => "qdr:m",
+            Self::Year => "qdr:y",
         }
     }
 }
@@ -268,7 +273,7 @@ mod tests {
     #[test]
     fn time_filter_uses_the_live_query_value() {
         assert_eq!(
-            serde_json::to_string(&TimeFilter::PastWeek).expect("serialize"),
+            serde_json::to_string(&TimeFilter::Week).expect("serialize"),
             "\"qdr:w\""
         );
     }

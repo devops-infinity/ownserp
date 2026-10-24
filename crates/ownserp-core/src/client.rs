@@ -19,6 +19,7 @@ const MAX_UPSTREAM_BYTES: usize = 4 * 1024 * 1024;
 const MAX_ATTEMPTS: u32 = 3;
 const BASE_BACKOFF_MS: u64 = 250;
 const MAX_ERROR_MESSAGE_CHARS: usize = 300;
+const CONNECT_TIMEOUT_SECS: u64 = 5;
 
 #[derive(Clone)]
 pub struct SerperClient {
@@ -33,6 +34,8 @@ impl SerperClient {
         install_crypto_provider();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(settings.request_timeout_secs()))
+            .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
+            .redirect(reqwest::redirect::Policy::none())
             .user_agent(format!("ownserp/{}", crate::VERSION))
             .build()
             .map_err(|error| Error::network("building the HTTP client", error))?;
@@ -114,6 +117,7 @@ impl SerperClient {
 
     pub async fn health(&self) -> Option<Value> {
         let url = format!("{}/health", self.base_for(Host::Api));
+        wait_for_permit(&self.limiter).await?;
         let response = self
             .http
             .get(&url)
@@ -124,12 +128,14 @@ impl SerperClient {
         if !response.status().is_success() {
             return None;
         }
-        response.json::<Value>().await.ok()
+        let (_, bytes) = read_capped(response).await.ok()?;
+        serde_json::from_slice(&bytes).ok()
     }
 
     pub async fn live_balance(&self) -> Option<u64> {
         let key = self.key.as_ref()?;
         let url = format!("{}/account", self.base_for(Host::Google));
+        wait_for_permit(&self.limiter).await?;
         let response = self
             .http
             .get(&url)
@@ -141,7 +147,8 @@ impl SerperClient {
         if !response.status().is_success() {
             return None;
         }
-        let body = response.json::<Value>().await.ok()?;
+        let (_, bytes) = read_capped(response).await.ok()?;
+        let body: Value = serde_json::from_slice(&bytes).ok()?;
         body.get("credits")
             .or_else(|| body.get("balance"))
             .and_then(Value::as_u64)
@@ -178,6 +185,17 @@ impl SerperClient {
         }
     }
 
+    pub async fn acquire_queries(
+        &self,
+        query_count: usize,
+        cancellation: &CancellationToken,
+    ) -> Result<()> {
+        for _ in 0..query_count.max(1) {
+            self.acquire(cancellation).await?;
+        }
+        Ok(())
+    }
+
     async fn acquire(&self, cancellation: &CancellationToken) -> Result<()> {
         tokio::select! {
             () = self.limiter.until_ready() => Ok(()),
@@ -191,7 +209,19 @@ fn retryable_status(status: u16) -> bool {
 }
 
 fn retryable_error(error: &reqwest::Error) -> bool {
-    error.is_timeout() || error.is_connect()
+    // A timeout can follow a request the upstream already billed, so only a failed connect is retried.
+    error.is_connect()
+}
+
+async fn wait_for_permit(
+    limiter: &RateLimiter<NotKeyed, InMemoryState, DefaultClock>,
+) -> Option<()> {
+    tokio::time::timeout(
+        Duration::from_secs(CONNECT_TIMEOUT_SECS),
+        limiter.until_ready(),
+    )
+    .await
+    .ok()
 }
 
 fn backoff(attempt: u32) -> Duration {

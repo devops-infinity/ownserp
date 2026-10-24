@@ -39,11 +39,16 @@ say SUCCESS "shell syntax"
 require_tool cargo "install Rust from https://rustup.rs"
 require_tool shellcheck "run: brew install shellcheck"
 require_tool shfmt "run: brew install shfmt"
-for tool in cargo-audit cargo-deny cargo-machete; do
-	require_tool "$tool" "run: cargo install --locked $tool"
+for tool in cargo-audit cargo-deny cargo-machete gitleaks; do
+	require_tool "$tool" "run: cargo install --locked $tool, or brew install $tool"
 done
 
 run_check "shellcheck" "fix the reported shell problem" shellcheck -x "${SHELL_FILES[@]}"
+if command -v bats >/dev/null 2>&1; then
+	run_check "shell tests" "fix the failing shell test" bats tools/tests/cli.bats
+else
+	warn "bats is not installed, so the shell tests were skipped"
+fi
 run_check "shfmt" "run: shfmt -w tools" shfmt -d "${SHELL_FILES[@]}"
 if command -v node >/dev/null 2>&1; then
 	run_check "npm loader syntax" "fix the JavaScript error" node --check packages/npm/bin/ownserp.js
@@ -68,10 +73,7 @@ if command -v cargo-llvm-cov >/dev/null 2>&1; then
 else
 	warn "cargo-llvm-cov is not installed, so the coverage floor was skipped"
 fi
-if command -v gitleaks >/dev/null 2>&1; then
-	run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1 --config .gitleaks.toml
-else
-	warn "gitleaks is not installed, so the secret scan was skipped"
-fi
+run_check "secret scan" "a credential pattern is in the tree" gitleaks detect --source . --no-git --redact --exit-code 1 --config .gitleaks.toml
+run_check "secret scan (history)" "a credential pattern is in the commit history" gitleaks git --redact --exit-code 1 --config .gitleaks.toml
 
 say SUCCESS "gate passed: $REPO"

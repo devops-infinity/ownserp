@@ -449,6 +449,8 @@ pub struct BatchEntry {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub query: Option<String>,
     pub results: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

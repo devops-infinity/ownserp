@@ -86,7 +86,8 @@ impl ResponseCache {
             .state
             .lock()
             .map_err(|_| Error::Config("cache lock poisoned".into()))?;
-        if state.entries.remove(&key).is_some() {
+        if let Some(replaced) = state.entries.remove(&key) {
+            state.bytes = state.bytes.saturating_sub(replaced.bytes);
             state.order.retain(|item| item != &key);
         }
         state.bytes = state.bytes.saturating_add(bytes);

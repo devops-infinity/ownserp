@@ -117,8 +117,9 @@ fn validate_code(raw: &str, field: &str) -> Result<String> {
     let is_valid =
         trimmed.chars().count() == 2 && trimmed.chars().all(|ch| ch.is_ascii_alphabetic());
     if !is_valid {
+        let shown: String = raw.chars().take(16).collect();
         return Err(Error::InvalidArgs(format!(
-            "{field} takes a two-letter code, got: {raw}"
+            "{field} takes a two-letter code, got: {shown}"
         )));
     }
     Ok(trimmed.to_ascii_lowercase())
@@ -221,6 +222,11 @@ fn identifier(raw: &str, field: &str) -> Result<String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() || trimmed.chars().count() > 512 {
         return Err(Error::InvalidArgs(format!("{field} is empty or too long")));
+    }
+    if trimmed.chars().any(char::is_control) {
+        return Err(Error::InvalidArgs(format!(
+            "{field} contains a control character"
+        )));
     }
     Ok(trimmed.to_owned())
 }

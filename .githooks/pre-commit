@@ -6,15 +6,15 @@ source "$REPO/tools/lib.sh"
 require_bash 4.4
 
 if ! command -v gitleaks >/dev/null 2>&1; then
-	warn "gitleaks is not installed, so the staged secret scan was skipped"
-	exit 0
+	say FAILED "gitleaks is required for the commit secret scan; install it with: brew install gitleaks"
+	exit 1
 fi
 
-if gitleaks git --staged --redact --exit-code 1 >/dev/null 2>&1; then
+if gitleaks git --staged --redact --config "$REPO/.gitleaks.toml" --exit-code 1 >/dev/null 2>&1; then
 	say SUCCESS "staged secret scan clean"
 	exit 0
 fi
 
 say FAILED "a credential pattern is staged; fix it before committing"
-gitleaks git --staged --redact || true
+gitleaks git --staged --redact --config "$REPO/.gitleaks.toml" || true
 exit 1
