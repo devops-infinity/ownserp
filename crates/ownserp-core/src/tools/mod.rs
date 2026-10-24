@@ -14,12 +14,13 @@ use serde_json::Value;
 use crate::config::Settings;
 use crate::error::{Error, Result};
 use crate::response::{
-    BatchOutput, Envelope, ImageItem, LensItem, ListOutput, LocationItem, NewsItem, OrganicItem,
-    PatentItem, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput, ShoppingItem,
-    Suggestion, VideoItem,
+    BatchOutput, Envelope, HealthOutput, ImageItem, LensItem, ListOutput, LocationItem, NewsItem,
+    OrganicItem, PatentItem, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput,
+    ShoppingItem, Suggestion, VideoItem,
 };
 use crate::tools::args::{
-    BatchArgs, LensArgs, LocationsArgs, ReviewsArgs, ScrapeArgs, SearchArgs, SessionArgs,
+    BatchArgs, HealthArgs, LensArgs, LocationsArgs, ReviewsArgs, ScrapeArgs, SearchArgs,
+    SessionArgs,
 };
 use crate::tools::specs::ToolSpec;
 
@@ -47,6 +48,7 @@ fn build_tool(spec: &'static ToolSpec) -> Result<Tool> {
         "serper_scrape" => input_schema::<ScrapeArgs>()?,
         "serper_locations" => input_schema::<LocationsArgs>()?,
         "serper_search_batch" => input_schema::<BatchArgs>()?,
+        "serper_health" => input_schema::<HealthArgs>()?,
         "serper_session" => input_schema::<SessionArgs>()?,
         other => {
             return Err(Error::Config(format!(
@@ -61,7 +63,10 @@ fn build_tool(spec: &'static ToolSpec) -> Result<Tool> {
             ToolAnnotations::new()
                 .read_only(true)
                 .destructive(false)
-                .idempotent(matches!(spec.name, "serper_locations" | "serper_session"))
+                .idempotent(matches!(
+                    spec.name,
+                    "serper_locations" | "serper_session" | "serper_health"
+                ))
                 .open_world(true),
         );
     Ok(match spec.name {
@@ -80,6 +85,7 @@ fn build_tool(spec: &'static ToolSpec) -> Result<Tool> {
         "serper_scrape" => attach_output_schema::<ScrapeOutput>(tool),
         "serper_search_batch" => attach_output_schema::<BatchOutput>(tool),
         "serper_session" => attach_output_schema::<SessionOutput>(tool),
+        "serper_health" => attach_output_schema::<HealthOutput>(tool),
         _ => tool,
     })
 }

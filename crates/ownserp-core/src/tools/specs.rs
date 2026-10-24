@@ -101,6 +101,12 @@ pub const SPECS: &[ToolSpec] = &[
         description: "Run up to 100 queries against one search family in a single call, reporting progress per query. Disabled unless enable_batch is set in the profile.",
     },
     ToolSpec {
+        name: "serper_health",
+        title: "Serper service health",
+        description: "Health of the Serper API from api.serper.dev, unauthenticated and free. Call it before a long run, or when another tool reports an upstream failure.",
+        endpoint: None,
+    },
+    ToolSpec {
         name: "serper_session",
         title: "Session spend and stats",
         endpoint: None,
@@ -126,7 +132,7 @@ pub(crate) fn cost_sentence(spec: &ToolSpec) -> String {
             "Costs 2, 6, or 10 credits by page difficulty, while the response reports the actual figure.".to_owned()
         }
         "serper_search_batch" => "Every query costs three times its single price.".to_owned(),
-        "serper_locations" | "serper_session" => "Free.".to_owned(),
+        "serper_locations" | "serper_session" | "serper_health" => "Free.".to_owned(),
         _ => {
             let credits = spec
                 .endpoint

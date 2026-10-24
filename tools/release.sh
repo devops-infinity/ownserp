@@ -40,7 +40,7 @@ Everything runs on this machine. Nothing is committed, pushed, or published.
 
 Release order on this machine:
   1. tools/release.sh --prepare --patch, then edit CHANGELOG.md
-  2. commit the bump on a sazzad/ branch and merge it into main
+  2. commit the bump on a release branch and merge it into main
   3. tools/release.sh --package --tag
   4. publish the archive and tag with gh, on your order
 USAGE
@@ -169,7 +169,7 @@ prepare() {
 	fi
 	insert_changelog_heading "$new" "$date"
 	say SUCCESS "prepared $new"
-	say INFO "next: write the CHANGELOG entries, commit on a sazzad/ branch, and merge into main"
+	say INFO "next: write the CHANGELOG entries, commit on a release branch, and merge into main"
 }
 
 package() {

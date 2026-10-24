@@ -943,3 +943,67 @@ async fn a_failed_probe_reports_nothing() {
     assert!(ctx.client.health().await.is_none());
     assert!(ctx.client.live_balance().await.is_none());
 }
+
+#[tokio::test]
+async fn the_health_tool_reports_the_service_state() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/health"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "status": "ok",
+            "info": {"region": "us"}
+        })))
+        .mount(&server)
+        .await;
+    let ctx = context("health", &server.uri(), 0);
+    let args = arguments(json!({}));
+    let result = call_tool(
+        &ctx,
+        "serper_health",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    let value = result_json(&result);
+    assert_eq!(value.get("isError"), Some(&Value::Bool(false)), "{value}");
+    let body = value.get("structuredContent").expect("structured content");
+    assert_eq!(body.get("status").and_then(Value::as_str), Some("ok"));
+    assert_eq!(
+        body.pointer("/cost/credits").and_then(Value::as_u64),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn reported_credits_replace_the_estimate() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "credits": 3,
+            "organic": [{"title": "one", "link": "l", "position": 1}]
+        })))
+        .mount(&server)
+        .await;
+    let ctx = context("reported", &server.uri(), 0);
+    let args = arguments(json!({"q": "apple inc"}));
+    let result = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    let value = result_json(&result);
+    let body = value.get("structuredContent").expect("structured content");
+    assert_eq!(
+        body.pointer("/cost/credits").and_then(Value::as_u64),
+        Some(3),
+        "the cost object carries the reported figure"
+    );
+    let ledger = std::fs::read_to_string(ctx.ledger.path().expect("path")).expect("ledger");
+    assert!(
+        ledger.contains("\"credits_actual\":3"),
+        "ledger was: {ledger}"
+    );
+}

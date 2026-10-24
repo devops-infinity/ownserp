@@ -16,7 +16,7 @@ Everything runs on this machine. There is no GitHub Actions workflow, no hosted 
 
 ```bash
 git switch main && git pull
-git switch -c sazzad/prepare-X-Y-Z
+git switch -c release/prepare-X-Y-Z
 tools/release.sh --prepare --patch
 ```
 
@@ -26,7 +26,7 @@ Use `--minor`, `--major`, or `--version X.Y.Z` instead of `--patch` as needed. I
 
 ```bash
 git add -A && git commit -m "Prepare X.Y.Z"
-git push -u origin sazzad/prepare-X-Y-Z
+git push -u origin release/prepare-X-Y-Z
 gh pr create --fill --base main
 ```
 
@@ -52,7 +52,7 @@ git push origin vX.Y.Z
 
 npm asks for a one-time code on every publish when the account has two-factor authentication and the stored credential is an interactive login. Replace that once with a granular token that bypasses it:
 
-1. Open https://www.npmjs.com/settings/sharkar/tokens, choose Generate New Token, then Granular Access Token.
+1. Open https://www.npmjs.com/settings/<your-user>/tokens, choose Generate New Token, then Granular Access Token.
 2. Allow read and write for the `@devops-infinity` scope, and tick "Bypass two-factor authentication".
 3. Run `tools/npm-auth-setup.sh` and paste the token. It is read with echo off, written to your user npmrc with owner-only permissions, and never printed.
 

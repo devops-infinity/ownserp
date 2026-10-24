@@ -34,10 +34,10 @@ pub use projection::{
     summary_text,
 };
 pub use response::{
-    AnswerBox, BatchEntry, BatchOutput, CostInfo, Envelope, ImageItem, KnowledgeGraph, LensItem,
-    ListOutput, LocationItem, NewsItem, OrganicItem, PatentItem, PeopleAlsoAsk, PlaceItem,
-    ReviewItem, ScholarItem, ScrapeOutput, SessionOutput, ShoppingItem, Suggestion, ToolUsage,
-    VideoItem,
+    AnswerBox, BatchEntry, BatchOutput, CostInfo, Envelope, HealthOutput, ImageItem,
+    KnowledgeGraph, LensItem, ListOutput, LocationItem, NewsItem, OrganicItem, PatentItem,
+    PeopleAlsoAsk, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput, ShoppingItem,
+    Suggestion, ToolUsage, VideoItem,
 };
 pub use secrecy::SecretString;
 pub use server::{Metrics, OwnserpHandler, serve_http, serve_stdio};

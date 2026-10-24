@@ -4,6 +4,21 @@ All notable changes to this project are recorded here. The format follows [Keep 
 
 The minimum supported Rust version is 1.89. Raising it is recorded in this file and ships in a minor release.
 
+## [Unreleased]
+
+### Added
+
+- `serper_health`, a free tool that reports the status of the Serper API.
+- A benchmark harness and a comparison report against the Python Serper MCP server.
+
+### Fixed
+
+- Patents results read the `organic` array that Serper returns.
+- Actual credits from every response are recorded in the cost object and the ledger.
+- Places and maps return `fid` and `placeId`, so a review lookup can follow a result, and maps reads `phoneNumber`.
+- Shopping returns rating and product id, scholar returns the pdf link and cluster id, patents returns inventor, language, publication date, and figures, lens returns the image, and images and videos return the missing media fields.
+- The public documentation carries no personal branch prefix or npm username.
+
 ## [0.1.2] - 2026-10-24
 
 ### Fixed

@@ -16,7 +16,7 @@ use serde_json::Value;
 fn catalog_is_prefixed_bounded_and_fully_typed() {
     let handler = OwnserpHandler::new(common::settings("catalog")).expect("handler");
     let tools = handler.tools();
-    assert_eq!(tools.len(), 15, "batch stays disabled by default");
+    assert_eq!(tools.len(), 16, "batch stays disabled by default");
     let mut names = BTreeSet::new();
     let mut descriptions = BTreeSet::new();
     for tool in tools {
@@ -68,7 +68,10 @@ fn catalog_is_prefixed_bounded_and_fully_typed() {
         let annotations = tool.annotations.as_ref().expect("annotations");
         assert_eq!(annotations.read_only_hint, Some(true));
         assert_eq!(annotations.destructive_hint, Some(false));
-        let free = matches!(tool.name.as_ref(), "serper_locations" | "serper_session");
+        let free = matches!(
+            tool.name.as_ref(),
+            "serper_locations" | "serper_session" | "serper_health"
+        );
         assert_eq!(
             annotations.idempotent_hint,
             Some(free),

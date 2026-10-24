@@ -277,6 +277,7 @@ Every tool description in the tool list states the price, so a model can budget 
 - `serper_reviews`, 1 credit. Reviews for one place, with cursor pagination through `nextPageToken`.
 - `serper_lens`, 3 credits. Reverse image search for a public image URL.
 - `serper_scrape`, 2, 6, or 10 credits by page difficulty. Page content as Markdown or text, with an optional title, images, links, and videos, and the actual credits read from the response.
+- `serper_health`, free and unauthenticated. The status of the Serper API from api.serper.dev.
 - `serper_locations`, free and unauthenticated. Canonical location names to pass as `location`.
 - `serper_session`, free. Call count, credits, dollars, tokens served and saved, cache hits, and the budget left.
 - `serper_search_batch`, 3 times the single price per query. Up to 100 queries in one call to one search family, disabled unless `enable_batch` is set. A call to it while disabled is refused with `serper.tool_not_found`.
@@ -392,6 +393,7 @@ The local lifecycle:
 - `tools/publish-npm.sh` publishes the npm package; `tools/npm-auth-setup.sh` stores the token that makes it OTP-free.
 - `tools/install-hooks.sh` points git at the local hooks: a secret scan before each commit and the full gate before each push.
 - [RELEASING.md](RELEASING.md) is the release runbook.
+- `benchmarks/compare.py` benchmarks the live tool surface against the Python Serper MCP server, and `benchmarks/report.md` records the measured result.
 
 ## Distribution
 

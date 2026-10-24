@@ -50,6 +50,10 @@ pub struct ImageItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_height: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_width: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_height: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub domain: Option<String>,
@@ -104,6 +108,16 @@ pub struct PlaceItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub phone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub price_level: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub place_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub opening_hours: Option<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thumbnail_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub website: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cid: Option<String>,
@@ -135,6 +149,8 @@ pub struct VideoItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel_link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
@@ -160,6 +176,12 @@ pub struct ShoppingItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub image_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rating_count: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub product_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
@@ -168,6 +190,8 @@ pub struct ShoppingItem {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ScholarItem {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -180,6 +204,12 @@ pub struct ScholarItem {
     pub year: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cited_by: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pdf_url: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cluster_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub versions: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -198,6 +228,12 @@ pub struct PatentItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub assignee: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inventor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication_number: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub filing_date: Option<String>,
@@ -205,6 +241,8 @@ pub struct PatentItem {
     pub grant_date: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priority_date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub figures: Option<Vec<Value>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -240,6 +278,8 @@ pub struct ReviewItem {
 pub struct LensItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub image_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -440,4 +480,14 @@ impl<T> ListOutput<T> {
             truncated: false,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct HealthOutput {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub info: Option<Value>,
+    pub cost: CostInfo,
 }

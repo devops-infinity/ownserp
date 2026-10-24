@@ -6,4 +6,5 @@ paths = [
   '''^target/''',
   '''^dist/''',
   '''^\.git/''',
+  '''^benchmarks/results\.json$''',
 ]

@@ -193,6 +193,14 @@ pub(crate) fn images(raw: &Value, preset: Preset) -> (Vec<ImageItem>, bool) {
                 Preset::Minimal => None,
                 _ => integer_field(value, "imageHeight"),
             },
+            thumbnail_width: match preset {
+                Preset::Full => integer_field(value, "thumbnailWidth"),
+                _ => None,
+            },
+            thumbnail_height: match preset {
+                Preset::Full => integer_field(value, "thumbnailHeight"),
+                _ => None,
+            },
             source: match preset {
                 Preset::Minimal => None,
                 _ => text_field(value, "source"),
@@ -275,9 +283,29 @@ pub(crate) fn places(raw: &Value, preset: Preset) -> (Vec<PlaceItem>, bool) {
                 Preset::Minimal => None,
                 _ => text_field(value, "type"),
             },
+            price_level: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "priceLevel"),
+            },
+            place_id: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "placeId"),
+            },
+            fid: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "fid"),
+            },
+            opening_hours: match preset {
+                Preset::Full => value.get("openingHours").cloned(),
+                _ => None,
+            },
+            thumbnail_url: match preset {
+                Preset::Full => text_field(value, "thumbnailUrl"),
+                _ => None,
+            },
             phone: match preset {
                 Preset::Minimal => None,
-                _ => text_field(value, "phone"),
+                _ => text_field(value, "phone").or_else(|| text_field(value, "phoneNumber")),
             },
             website: match preset {
                 Preset::Minimal => None,
@@ -325,6 +353,10 @@ pub(crate) fn videos(raw: &Value, preset: Preset) -> (Vec<VideoItem>, bool) {
                 Preset::Standard | Preset::Full => text_field(value, "channelLink"),
                 Preset::Minimal => None,
             },
+            source: match preset {
+                Preset::Standard | Preset::Full => text_field(value, "source"),
+                Preset::Minimal => None,
+            },
             date: text_field(value, "date"),
             image_url: match preset {
                 Preset::Full => text_field(value, "imageUrl"),
@@ -344,6 +376,18 @@ pub(crate) fn shopping(raw: &Value, preset: Preset) -> (Vec<ShoppingItem>, bool)
         items.push(ShoppingItem {
             title: text_field(value, "title"),
             price: text_field(value, "price"),
+            rating: match preset {
+                Preset::Minimal => None,
+                _ => number_field(value, "rating"),
+            },
+            rating_count: match preset {
+                Preset::Minimal => None,
+                _ => count_field(value, "ratingCount"),
+            },
+            product_id: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "productId"),
+            },
             link: text_field(value, "link"),
             source: match preset {
                 Preset::Minimal => None,
@@ -371,6 +415,10 @@ pub(crate) fn scholar(raw: &Value, preset: Preset) -> (Vec<ScholarItem>, bool) {
         let (snippet, cut) = snippet_for(value, preset);
         truncated |= cut;
         items.push(ScholarItem {
+            id: match preset {
+                Preset::Full => text_field(value, "id"),
+                _ => None,
+            },
             title: text_field(value, "title"),
             link: text_field(value, "link"),
             snippet,
@@ -383,6 +431,18 @@ pub(crate) fn scholar(raw: &Value, preset: Preset) -> (Vec<ScholarItem>, bool) {
                 Preset::Minimal => None,
                 _ => count_field(value, "citedBy"),
             },
+            pdf_url: match preset {
+                Preset::Full => text_field(value, "pdfUrl"),
+                _ => None,
+            },
+            cluster_id: match preset {
+                Preset::Full => text_field(value, "clusterId"),
+                _ => None,
+            },
+            versions: match preset {
+                Preset::Full => value.get("versions").and_then(Value::as_array).cloned(),
+                _ => None,
+            },
             position: integer_field(value, "position"),
             truncated: cut.then_some(true),
         });
@@ -392,8 +452,13 @@ pub(crate) fn scholar(raw: &Value, preset: Preset) -> (Vec<ScholarItem>, bool) {
 
 pub(crate) fn patents(raw: &Value, preset: Preset) -> (Vec<PatentItem>, bool) {
     let mut truncated = false;
+    let source = if array(raw, "patents").is_empty() {
+        array(raw, "organic")
+    } else {
+        array(raw, "patents")
+    };
     let mut items = Vec::new();
-    for value in array(raw, "patents") {
+    for value in source {
         let (snippet, cut) = snippet_for(value, preset);
         truncated |= cut;
         items.push(PatentItem {
@@ -403,6 +468,18 @@ pub(crate) fn patents(raw: &Value, preset: Preset) -> (Vec<PatentItem>, bool) {
             assignee: match preset {
                 Preset::Minimal => None,
                 _ => text_field(value, "assignee"),
+            },
+            inventor: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "inventor"),
+            },
+            language: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "language"),
+            },
+            publication_date: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "publicationDate"),
             },
             publication_number: text_field(value, "publicationNumber"),
             filing_date: match preset {
@@ -416,6 +493,10 @@ pub(crate) fn patents(raw: &Value, preset: Preset) -> (Vec<PatentItem>, bool) {
             priority_date: match preset {
                 Preset::Standard | Preset::Full => text_field(value, "priorityDate"),
                 Preset::Minimal => None,
+            },
+            figures: match preset {
+                Preset::Full => value.get("figures").and_then(Value::as_array).cloned(),
+                _ => None,
             },
             position: integer_field(value, "position"),
             truncated: cut.then_some(true),
@@ -479,6 +560,10 @@ pub(crate) fn lens(raw: &Value, preset: Preset) -> (Vec<LensItem>, bool) {
     for value in array(raw, key) {
         items.push(LensItem {
             title: text_field(value, "title"),
+            image_url: match preset {
+                Preset::Minimal => None,
+                _ => text_field(value, "imageUrl"),
+            },
             link: text_field(value, "link"),
             source: text_field(value, "source"),
             thumbnail_url: match preset {
@@ -858,6 +943,24 @@ mod search_item_tests {
         assert_eq!(suggestions(&raw).len(), 2);
         assert_eq!(reviews(&raw, Preset::Standard).0.len(), 1);
         assert_eq!(lens(&raw, Preset::Standard).0.len(), 1);
+    }
+
+    #[test]
+    fn patents_reads_the_organic_array_the_api_returns() {
+        let raw = serde_json::json!({
+            "organic": [{
+                "title": "Wireless charging pad",
+                "link": "https://patents.google.com/patent/US123",
+                "snippet": "A charging pad.",
+                "publicationNumber": "US123",
+                "assignee": "Example Corp",
+                "position": 1
+            }]
+        });
+        let (items, _) = patents(&raw, Preset::Standard);
+        let first = items.first().expect("patent item");
+        assert_eq!(first.publication_number.as_deref(), Some("US123"));
+        assert_eq!(first.assignee.as_deref(), Some("Example Corp"));
     }
 
     #[test]

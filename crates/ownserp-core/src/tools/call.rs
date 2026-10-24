@@ -17,10 +17,12 @@ use crate::error::{Error, Result};
 use crate::ledger::{CallRecord, Ledger, Reservation};
 use crate::projection::{self, SearchSections};
 use crate::response::{
-    BatchEntry, BatchOutput, CostInfo, Envelope, ListOutput, ScrapeOutput, SessionOutput, ToolUsage,
+    BatchEntry, BatchOutput, CostInfo, Envelope, HealthOutput, ListOutput, ScrapeOutput,
+    SessionOutput, ToolUsage,
 };
 use crate::tools::args::{
-    BatchArgs, LensArgs, LocationsArgs, ReviewsArgs, ScrapeArgs, SearchArgs, SessionArgs,
+    BatchArgs, HealthArgs, LensArgs, LocationsArgs, ReviewsArgs, ScrapeArgs, SearchArgs,
+    SessionArgs,
 };
 use crate::types::{Preset, TextMode};
 
@@ -136,6 +138,7 @@ async fn dispatch(
         "serper_scrape" => scrape(ctx, parse(arguments)?, cancellation).await,
         "serper_locations" => locations(ctx, parse(arguments)?, cancellation).await,
         "serper_search_batch" => batch(ctx, parse(arguments)?, cancellation).await,
+        "serper_health" => health(ctx, parse(arguments)?).await,
         "serper_session" => session_totals(ctx, parse(arguments)?).await,
         other => Err(Error::InvalidArgs(format!("unknown tool: {other}"))),
     }
@@ -190,8 +193,8 @@ async fn execute_search(
     } else {
         None
     };
-    let (raw, cache_age, charged) = match cached {
-        Some((raw, age)) => (raw, Some(age), 0),
+    let (raw, cache_age) = match cached {
+        Some((raw, age)) => (raw, Some(age)),
         None => {
             let raw = match ctx.client.post(endpoint, &body, cancellation).await {
                 Ok(raw) => raw,
@@ -201,8 +204,17 @@ async fn execute_search(
                     return Err(error);
                 }
             };
-            (Arc::new(raw), None, credits)
+            (Arc::new(raw), None)
         }
+    };
+    let reported_credits = raw
+        .get("credits")
+        .and_then(Value::as_u64)
+        .and_then(|value| u32::try_from(value).ok());
+    let charged = if cache_age.is_some() {
+        0
+    } else {
+        reported_credits.unwrap_or(credits)
     };
     let prepared: Result<(Value, usize, Option<String>, Option<String>)> = (|| {
         if cacheable && cache_age.is_none() {
@@ -225,8 +237,8 @@ async fn execute_search(
                     tool: endpoint.tool_name().to_owned(),
                     endpoint: endpoint.path().to_owned(),
                     args_hash: args_hash(ctx.hash_key.as_ref(), &body),
-                    credits_estimated: charged,
-                    credits_actual: None,
+                    credits_estimated: credits,
+                    credits_actual: reported_credits,
                     batch_multiplier: 1,
                     duration_ms: elapsed_ms(started),
                     status: format!("error:{}", error.code()),
@@ -251,8 +263,8 @@ async fn execute_search(
             tool: endpoint.tool_name().to_owned(),
             endpoint: endpoint.path().to_owned(),
             args_hash: args_hash(ctx.hash_key.as_ref(), &body),
-            credits_estimated: charged,
-            credits_actual: None,
+            credits_estimated: if cache_age.is_some() { 0 } else { credits },
+            credits_actual: reported_credits,
             batch_multiplier: 1,
             duration_ms: elapsed_ms(started),
             status: if cache_age.is_some() { "cache" } else { "ok" }.to_owned(),
@@ -727,6 +739,45 @@ async fn batch(
             cost.usd
         ),
     };
+    Ok(tool_result(value, text))
+}
+
+async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> {
+    let started = Instant::now();
+    let body = ctx.client.health().await.ok_or_else(|| Error::Upstream {
+        status: 503,
+        message: "api.serper.dev/health did not answer".to_owned(),
+    })?;
+    let status = body
+        .get("status")
+        .and_then(Value::as_str)
+        .map(crate::projection::sanitize);
+    let info = body.get("info").cloned();
+    append_call_record(
+        ctx,
+        CallRecord {
+            tool: "serper_health".to_owned(),
+            endpoint: "/health".to_owned(),
+            args_hash: args_hash(ctx.hash_key.as_ref(), &Value::Object(Map::new())),
+            credits_estimated: 0,
+            credits_actual: Some(0),
+            batch_multiplier: 1,
+            duration_ms: elapsed_ms(started),
+            status: "ok".to_owned(),
+            response_bytes: serde_json::to_vec(&body)?.len() as u64,
+            tokens: 0,
+            tokens_saved: 0,
+            cache_hit: false,
+        },
+    )
+    .await?;
+    let output = HealthOutput {
+        status: status.clone(),
+        info,
+        cost: cost_info(ctx, 0, None)?,
+    };
+    let value = serde_json::to_value(&output)?;
+    let text = format!("service status: {}", status.as_deref().unwrap_or("unknown"));
     Ok(tool_result(value, text))
 }
 
