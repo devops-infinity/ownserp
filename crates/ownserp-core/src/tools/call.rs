@@ -87,6 +87,7 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
     let mut tag = [0u8; 8];
     getrandom::fill(&mut tag).map_err(|error| Error::Config(format!("os random: {error}")))?;
     std::fs::create_dir_all(dir)?;
+    lock_down_key_dir(dir)?;
     let temporary = dir.join(format!(
         "args.key.{}-{}",
         std::process::id(),
@@ -133,6 +134,26 @@ fn read_hash_key(path: &std::path::Path) -> Result<[u8; 32]> {
             bytes.len()
         ))
     })
+}
+
+#[cfg(unix)]
+fn lock_down_key_dir(dir: &std::path::Path) -> Result<()> {
+    if dir.starts_with(crate::config::default_data_dir()) {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700)).map_err(|error| {
+            Error::Config(format!(
+                "cannot restrict {} to its owner: {error}",
+                dir.display()
+            ))
+        })
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(unix))]
+fn lock_down_key_dir(_dir: &std::path::Path) -> Result<()> {
+    Ok(())
 }
 
 fn sync_directory(dir: &std::path::Path) {
@@ -794,11 +815,7 @@ async fn batch(
     let mut _reservation = reserve_budget(ctx, total).await?;
     let body = Value::Array(bodies);
     let started = Instant::now();
-    let raw = match ctx
-        .client
-        .post_many(endpoint, &body, args.queries.len(), cancellation)
-        .await
-    {
+    let raw = match ctx.client.post_many(endpoint, &body, cancellation).await {
         Ok(raw) => raw,
         Err(error) => {
             append_failure(

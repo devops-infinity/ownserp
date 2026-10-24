@@ -1,5 +1,3 @@
-use std::num::NonZeroU32;
-
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -15,27 +13,6 @@ impl CreditCost {
 
     pub const fn get(self) -> u32 {
         self.0
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct QpsLimit(NonZeroU32);
-
-impl QpsLimit {
-    pub fn new(raw: u32) -> Result<Self, Error> {
-        NonZeroU32::new(raw)
-            .map(Self)
-            .ok_or_else(|| Error::Config("queries per second must be at least 1".into()))
-    }
-
-    pub const fn get(self) -> NonZeroU32 {
-        self.0
-    }
-}
-
-impl Default for QpsLimit {
-    fn default() -> Self {
-        Self(NonZeroU32::MIN)
     }
 }
 
@@ -213,16 +190,6 @@ impl PackTier {
             Self::Custom => None,
         }
     }
-
-    pub const fn qps(self) -> u32 {
-        match self {
-            Self::Starter => 50,
-            Self::Standard => 100,
-            Self::Scale => 200,
-            Self::Ultimate => 300,
-            Self::Custom => 50,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,7 +250,6 @@ mod tests {
         assert_eq!(PackTier::Starter.usd_per_1k(), Some(1.0));
         assert_eq!(PackTier::Ultimate.usd_per_1k(), Some(0.3));
         assert_eq!(PackTier::Custom.usd_per_1k(), None);
-        assert_eq!(PackTier::Scale.qps(), 200);
     }
 
     #[test]

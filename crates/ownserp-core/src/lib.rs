@@ -44,8 +44,7 @@ pub use server::{Metrics, OwnserpHandler, serve_http, serve_stdio};
 pub use tools::specs::{SPECS, ToolSpec};
 pub use tools::{ToolContext, args, call as call_tool};
 pub use types::{
-    ApiKeySource, CreditCost, LocationQuery, MapViewport, PackTier, Preset, QpsLimit, TextMode,
-    TimeFilter,
+    ApiKeySource, CreditCost, LocationQuery, MapViewport, PackTier, Preset, TextMode, TimeFilter,
 };
 
 pub const APP_NAME: &str = "OwnSERP";

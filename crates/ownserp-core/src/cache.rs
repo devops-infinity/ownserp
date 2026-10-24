@@ -80,6 +80,14 @@ impl ResponseCache {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn order_len(&self) -> usize {
+        match self.state.lock() {
+            Ok(state) => state.order.len(),
+            Err(_) => 0,
+        }
+    }
+
     pub fn put(&self, key: String, body: Arc<Value>) -> Result<()> {
         if !self.enabled() {
             return Ok(());
@@ -125,7 +133,19 @@ impl ResponseCache {
                 state.bytes = state.bytes.saturating_sub(removed.bytes);
             }
         }
+        prune_stale_order(&mut state);
         Ok(())
+    }
+}
+
+fn prune_stale_order(state: &mut CacheState) {
+    if state.order.len() > state.entries.len().saturating_mul(2).saturating_add(64) {
+        state.order.retain(|(key, generation)| {
+            state
+                .entries
+                .get(key)
+                .is_some_and(|entry| entry.generation == *generation)
+        });
     }
 }
 
@@ -224,5 +244,22 @@ mod tests {
         let (body, age) = cache.get("k").expect("get").expect("hit");
         assert_eq!(*body, json!({"a": 1}));
         assert_eq!(age, 0);
+    }
+
+    #[test]
+    fn replacing_a_key_does_not_grow_the_order_queue_without_bound() {
+        let cache = ResponseCache::new(600, 4096);
+        let body = Arc::new(json!({"a": 1}));
+        for _ in 0..10_000 {
+            cache
+                .put("same-key".to_owned(), Arc::clone(&body))
+                .expect("put");
+        }
+        assert!(
+            cache.order_len() < 200,
+            "the order queue grew to {} entries",
+            cache.order_len()
+        );
+        assert!(cache.get("same-key").expect("get").is_some());
     }
 }

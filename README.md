@@ -328,7 +328,7 @@ ownserp audit verify
 
 On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. On Windows a running server does not notice a rotate, so restart it to pick up the new chain. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
-`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. That bound holds only when a ceiling is set. With no ceiling it is the process count times the largest single reservation, which is 900 credits for a 100-query maps or lens batch. The response cache and the `OWN_SERPER_QPS` ceiling stay per process: each process keeps its own cache and its own outbound request rate. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
+`session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. That bound holds only when a ceiling is set. With no ceiling it is the process count times the largest single reservation, which is 900 credits for a 100-query maps or lens batch. The response cache stays per process: each process keeps its own cache. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
 
 To close a ledger without losing it, run `ownserp audit rotate`. It verifies the chain and archives the file beside the original with a timestamp. Every running server opens a fresh chain on its next write.
 
@@ -342,12 +342,10 @@ Environment variables:
 - `SERPER_USD_PER_1K`
 - `OWN_SERPER_PROFILE`
 - `OWN_SERPER_BIND`
-- `OWN_SERPER_QPS`, the client-side queries per second ceiling
 - `OWN_SERPER_CACHE_TTL_SECS`
 - `OWN_SERPER_LEDGER_DIR`
 - `OWN_SERPER_BEARER_TOKENS`
 - `OWN_SERPER_ALLOWED_HOSTS`
-- `OWN_SERPER_HTTP_QPS`, the global inbound request ceiling in HTTP mode, off when unset or 0
 - `OWN_SERPER_LOG_FORMAT`, set to `json` for one JSON object per log line
 
 Profile file at `$XDG_CONFIG_HOME/ownserp/profile.toml`, or `~/.config/ownserp/profile.toml`. On Windows it is `%APPDATA%\ownserp\profile.toml` when `HOME` is unset:
@@ -356,7 +354,6 @@ Profile file at `$XDG_CONFIG_HOME/ownserp/profile.toml`, or `~/.config/ownserp/p
 version = 1
 pack = "starter"
 usd_per_1k = 1.0
-qps = 50
 cache_ttl_secs = 0
 cache_max_bytes = 16777216
 ledger_dir = "/absolute/path/to/ownserp-ledger"
@@ -366,7 +363,6 @@ enable_batch = false
 http = false
 bind = "127.0.0.1:8777"
 request_timeout_secs = 30
-http_qps = 0
 ```
 
 `version` is the profile schema version. It is 1 today, and a profile that names a newer version is refused by name.
@@ -388,7 +384,7 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
   ownserp serve --http --bind 127.0.0.1:8777
 ```
 
-`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, checks the bearer token before it spends the global rate limit, and keeps `/readyz` out of that limiter, holds at most 128 requests at once, derives each request deadline from `request_timeout_secs` and the retry count, and cancels the call when the deadline passes, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
+`/healthz` is open. `/readyz` and `/metrics` require the bearer token whenever `OWN_SERPER_BEARER_TOKENS` is set, and every other path is the MCP endpoint. The server refuses a non-loopback bind without a token and refuses a token shorter than 32 characters. It checks the Host header against the allowlist on every protected route, caps a request body at 1 MiB and gives the body 30 seconds to arrive, accepts at most 256 connections, holds at most 128 requests at once, derives each request deadline from `request_timeout_secs` and the retry count, and cancels the call when the deadline passes, rejects a request that carries an Origin header, and marks every response `x-content-type-options: nosniff` with `cache-control: no-store`. Every bearer token on one server shares that server's ledger, session budget, and cache. Behind a proxy, list the names it sends in `OWN_SERPER_ALLOWED_HOSTS` and let the proxy enforce its own header and idle timeouts.
 
 ## Security
 
@@ -431,7 +427,6 @@ The local lifecycle:
 - `tools/registry-auth.sh` refreshes the GitHub, npm, crates.io, MCP Registry, and ghcr sessions from the environment variables already in your shell, so no registry asks for a login during a release.
 - `tools/install-hooks.sh` points git at the local hooks: a secret scan before each commit and the full gate before each push.
 - [RELEASING.md](RELEASING.md) is the release runbook.
-- [docs/benchmark.md](docs/benchmark.md) compares the live tool surface with the Python Serper MCP server and records the measured result.
 
 ## Distribution
 

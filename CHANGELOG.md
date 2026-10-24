@@ -14,7 +14,7 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ### Changed
 
-- A call that Serper answers with a 5xx status or a redirect is now recorded at zero credits, because ADR 0002 says only successful calls are billed. A timeout or a cancel keeps the estimate.
+- A call that Serper answers with a 5xx status or a redirect is now recorded at zero credits, because only successful calls are billed. A timeout or a cancel keeps the estimate.
 - A lock wait that runs out of time no longer marks the ledger broken for the rest of the process. The call fails with a busy error and the next one tries again.
 - An upstream 400 or 422 now reports `serper.bad_request`, and a JSON parse or shaping failure carries its own remedy instead of advice to check disk space.
 - `LedgerRow`, `Reservation`, and `ToolTotals` are re-exported from `ownserp-core`.
@@ -150,7 +150,7 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 - A loopback bind accepts `localhost`, `127.0.0.1`, and `::1` as the Host, and `OWN_SERPER_ALLOWED_HOSTS` is resolved with the rest of the settings instead of read at serve time.
 - The archive and the container image are built with the `dist` profile.
 - `tools/release.sh --prepare` stamps the `ownserp-core` requirement, the README install version, the npm package and loader, and the Dockerfile label, and it verifies `Cargo.lock` and every other stamp before it reports success.
-- A 5xx response is still retried within the attempt cap, on the rule in ADR 0002 that a failed call is not billed; the 0.1.3 note that described connect-only retries is superseded.
+- A 5xx response is still retried within the attempt cap, on the rule that a failed call is not billed; the 0.1.3 note that described connect-only retries is superseded.
 - The container image installs the CA bundle, so outbound TLS uses the system trust store.
 - A retry backoff ends as soon as the client cancels.
 - The USD rate must be finite and non-negative.
@@ -183,7 +183,6 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 ### Added
 
 - `serper_health`, a free tool that reports the status of the Serper API.
-- A benchmark comparison against the Python Serper MCP server.
 
 ### Changed
 

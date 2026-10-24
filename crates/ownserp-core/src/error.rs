@@ -53,8 +53,6 @@ pub enum Error {
     UnknownTool { name: String },
     #[error("request cancelled by the client")]
     Cancelled,
-    #[error("request cancelled before it was sent")]
-    CancelledBeforeSend,
     #[error("could not reach Serper")]
     ConnectFailed { message: String },
 }
@@ -92,7 +90,7 @@ impl Error {
             Self::Ledger(_) | Self::LedgerBusy(_) | Self::Io { .. } => "serper.internal_error",
             Self::Json { .. } | Self::Projection(_) => "serper.internal_error",
             Self::UnknownTool { .. } => "serper.tool_not_found",
-            Self::Cancelled | Self::CancelledBeforeSend => "serper.cancelled",
+            Self::Cancelled => "serper.cancelled",
             Self::ConnectFailed { .. } => "serper.upstream_failed",
         }
     }
@@ -101,7 +99,7 @@ impl Error {
         match self {
             Self::Upstream { status, .. } => *status >= 300,
             Self::RateLimited { .. } => true,
-            Self::CancelledBeforeSend | Self::ConnectFailed { .. } => true,
+            Self::ConnectFailed { .. } => true,
             _ => false,
         }
     }
@@ -151,7 +149,6 @@ impl Error {
                 "Call tools/list and use only the names it returns for this configuration."
             }
             Self::Cancelled => "Call the tool again if the work is still needed.",
-            Self::CancelledBeforeSend => "Call the tool again if the work is still needed.",
             Self::ConnectFailed { .. } => "Check network reachability, then retry.",
         }
     }

@@ -19,7 +19,6 @@ use axum::serve::{Listener, ListenerExt};
 use axum::{Router, middleware};
 use governor::clock::DefaultClock;
 use governor::state::keyed::DefaultKeyedStateStore;
-use governor::state::{InMemoryState, NotKeyed};
 use governor::{Quota, RateLimiter};
 use rmcp::transport::StreamableHttpServerConfig;
 use rmcp::transport::StreamableHttpService;
@@ -49,14 +48,12 @@ const FAILED_AUTH_PER_SECOND: u32 = 5;
 const CLIENT_ATTEMPTS: u64 = 3;
 const CLIENT_BACKOFF_TOTAL_MS: u64 = 1_250;
 
-type HttpLimiter = RateLimiter<NotKeyed, InMemoryState, DefaultClock>;
 type FailedAuthLimiter = RateLimiter<SocketAddr, DefaultKeyedStateStore<SocketAddr>, DefaultClock>;
 
 #[derive(Clone)]
 struct HttpState {
     tokens: Arc<Vec<secrecy::SecretString>>,
     metrics: Arc<Metrics>,
-    limiter: Option<Arc<HttpLimiter>>,
     failed_auth: Arc<FailedAuthLimiter>,
     gate: Arc<Semaphore>,
     request_seq: Arc<AtomicU64>,
@@ -76,10 +73,6 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         ));
     }
     validate_tokens(&tokens)?;
-    let limiter = settings.http_qps().filter(|rate| *rate > 0).map(|rate| {
-        let per_second = NonZeroU32::new(rate.max(1)).unwrap_or(NonZeroU32::MIN);
-        Arc::new(RateLimiter::direct(Quota::per_second(per_second)))
-    });
     let failed_auth = Arc::new(RateLimiter::keyed(Quota::per_second(
         NonZeroU32::new(FAILED_AUTH_PER_SECOND).unwrap_or(NonZeroU32::MIN),
     )));
@@ -92,8 +85,7 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         )
     };
     let allowed_hosts = allowed_hosts(&bind, settings.allowed_hosts());
-    let request_deadline =
-        call_deadline(settings.request_timeout_secs(), settings.qps().get().get());
+    let request_deadline = call_deadline(settings.request_timeout_secs());
     let handler = OwnserpHandler::with_deadline(settings, Some(request_deadline))?;
     let cancel = handler.cancellation_token();
     let metrics = handler.metrics();
@@ -111,7 +103,6 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
     let state = HttpState {
         tokens: Arc::new(tokens),
         metrics,
-        limiter,
         failed_auth,
         gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         request_seq: Arc::new(AtomicU64::new(0)),
@@ -126,10 +117,6 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .fallback_service(service)
         .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), gate_requests))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            limit_requests,
-        ))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             require_bearer,
@@ -378,23 +365,6 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
             "byTool": state.metrics.per_tool(),
         })),
     )
-}
-
-async fn limit_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
-    if request.uri().path() == "/readyz" {
-        return next.run(request).await;
-    }
-    if let Some(limiter) = state.limiter.as_ref()
-        && limiter.check().is_err()
-    {
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [(RETRY_AFTER, "1")],
-            "rate limited",
-        )
-            .into_response();
-    }
-    next.run(request).await
 }
 
 async fn reject_origin(request: Request, next: Next) -> Response {
@@ -662,18 +632,13 @@ fn unspecified_bind(bind: &str) -> bool {
         .is_ok_and(|address| address.is_unspecified())
 }
 
-fn call_deadline(request_timeout_secs: u64, qps: u32) -> Duration {
-    // The client makes three attempts with 250 ms and 500 ms backoff, and each attempt waits one limiter slot.
-    let limiter_ms = 1000u64
-        .saturating_mul(CLIENT_ATTEMPTS)
-        .checked_div(u64::from(qps.max(1)))
-        .unwrap_or(0);
+fn call_deadline(request_timeout_secs: u64) -> Duration {
+    // The client makes three attempts with 250 ms and 500 ms backoff.
     Duration::from_millis(
         request_timeout_secs
             .saturating_mul(CLIENT_ATTEMPTS)
             .saturating_mul(1000)
-            .saturating_add(CLIENT_BACKOFF_TOTAL_MS)
-            .saturating_add(limiter_ms),
+            .saturating_add(CLIENT_BACKOFF_TOTAL_MS),
     )
 }
 
@@ -684,11 +649,7 @@ mod tests {
     use axum::http::Request as HttpRequest;
     use tower::ServiceExt;
 
-    fn state(tokens: &[&str], qps: Option<u32>) -> HttpState {
-        let limiter = qps.filter(|rate| *rate > 0).map(|rate| {
-            let per_second = NonZeroU32::new(rate).unwrap_or(NonZeroU32::MIN);
-            Arc::new(RateLimiter::direct(Quota::per_second(per_second)))
-        });
+    fn state(tokens: &[&str]) -> HttpState {
         HttpState {
             tokens: Arc::new(
                 tokens
@@ -697,7 +658,6 @@ mod tests {
                     .collect(),
             ),
             metrics: Arc::new(Metrics::default()),
-            limiter,
             failed_auth: Arc::new(RateLimiter::keyed(Quota::per_second(
                 NonZeroU32::new(FAILED_AUTH_PER_SECOND).unwrap_or(NonZeroU32::MIN),
             ))),
@@ -714,10 +674,6 @@ mod tests {
         Router::new()
             .route("/probe", get(|| async { "ok" }))
             .route("/readyz", get(|| async { "ready" }))
-            .layer(middleware::from_fn_with_state(
-                state.clone(),
-                limit_requests,
-            ))
             .layer(middleware::from_fn_with_state(
                 state.clone(),
                 require_bearer,
@@ -751,7 +707,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_bearer_gate_rejects_then_accepts() {
-        let router = app(state(&["secret"], None));
+        let router = app(state(&["secret"]));
         let denied = router.clone().oneshot(probe()).await.expect("response");
         assert_eq!(denied.status(), StatusCode::UNAUTHORIZED);
         assert_eq!(
@@ -775,14 +731,14 @@ mod tests {
 
     #[tokio::test]
     async fn an_open_router_needs_no_token() {
-        let router = app(state(&[], None));
+        let router = app(state(&[]));
         let response = router.oneshot(probe()).await.expect("response");
         assert_eq!(response.status(), StatusCode::OK);
     }
 
     #[tokio::test]
     async fn the_request_id_is_echoed_when_valid() {
-        let router = app(state(&[], None));
+        let router = app(state(&[]));
         let request = HttpRequest::builder()
             .uri("/probe")
             .header(axum::http::header::HOST, "localhost")
@@ -800,71 +756,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_limiter_answers_429_with_retry_after() {
-        let router = app(state(&[], Some(1)));
-        let first = router.clone().oneshot(probe()).await.expect("response");
-        assert_eq!(first.status(), StatusCode::OK);
-        let second = router.oneshot(probe()).await.expect("response");
-        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(
-            second
-                .headers()
-                .get(RETRY_AFTER)
-                .and_then(|value| value.to_str().ok()),
-            Some("1")
-        );
-    }
-
-    #[tokio::test]
-    async fn an_unauthenticated_caller_does_not_spend_the_global_rate_limit() {
-        let router = app(state(&["secret"], Some(1)));
-        let first = router.clone().oneshot(probe()).await.expect("response");
-        assert_eq!(first.status(), StatusCode::UNAUTHORIZED);
-        let second = router.clone().oneshot(probe()).await.expect("response");
-        assert_eq!(
-            second.status(),
-            StatusCode::UNAUTHORIZED,
-            "a failed token must not spend the token holder's rate limit"
-        );
-        let authorized = HttpRequest::builder()
-            .uri("/probe")
-            .header(axum::http::header::HOST, "localhost")
-            .header(AUTHORIZATION, "Bearer secret")
-            .body(Body::empty())
-            .expect("request");
-        let allowed = router.clone().oneshot(authorized).await.expect("response");
-        assert_eq!(allowed.status(), StatusCode::OK);
-        let limited = HttpRequest::builder()
-            .uri("/probe")
-            .header(axum::http::header::HOST, "localhost")
-            .header(AUTHORIZATION, "Bearer secret")
-            .body(Body::empty())
-            .expect("request");
-        let refused = router.oneshot(limited).await.expect("response");
-        assert_eq!(refused.status(), StatusCode::TOO_MANY_REQUESTS);
-    }
-
-    #[tokio::test]
-    async fn the_readiness_probe_is_not_rate_limited() {
-        let router = app(state(&[], Some(1)));
-        for _ in 0..3 {
-            let request = HttpRequest::builder()
-                .uri("/readyz")
-                .header(axum::http::header::HOST, "localhost")
-                .body(Body::empty())
-                .expect("request");
-            let response = router.clone().oneshot(request).await.expect("response");
-            assert_eq!(response.status(), StatusCode::OK);
-        }
-        let first = router.clone().oneshot(probe()).await.expect("response");
-        assert_eq!(first.status(), StatusCode::OK);
-        let second = router.oneshot(probe()).await.expect("response");
-        assert_eq!(second.status(), StatusCode::TOO_MANY_REQUESTS);
-    }
-
-    #[tokio::test]
     async fn failed_tokens_are_limited_per_peer() {
-        let router = app(state(&["secret"], None));
+        let router = app(state(&["secret"]));
         let one = SocketAddr::from(([127, 0, 0, 1], 4000));
         let other = SocketAddr::from(([127, 0, 0, 2], 4000));
         for _ in 0..FAILED_AUTH_PER_SECOND {
@@ -890,7 +783,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_bearer_scheme_is_case_insensitive() {
-        let router = app(state(&["secret"], None));
+        let router = app(state(&["secret"]));
         for scheme in ["bearer", "BEARER", "BeArEr"] {
             let request = HttpRequest::builder()
                 .uri("/probe")
@@ -920,7 +813,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_http2_style_authority_counts_as_the_host() {
-        let mut state = state(&[], None);
+        let mut state = state(&[]);
         state.allowed_hosts = Arc::new(vec!["localhost".to_owned()]);
         let router = host_app(state);
         let request = HttpRequest::builder()
@@ -983,7 +876,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_host_entry_with_a_port_rejects_another_port() {
-        let mut state = state(&[], None);
+        let mut state = state(&[]);
         state.allowed_hosts = Arc::new(vec!["example.com:443".to_owned()]);
         let router = host_app(state);
         let request = HttpRequest::builder()
@@ -997,7 +890,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_invalid_host_header_is_rejected_instead_of_using_the_uri() {
-        let mut state = state(&[], None);
+        let mut state = state(&[]);
         state.allowed_hosts = Arc::new(vec!["localhost".to_owned()]);
         let router = host_app(state);
         let request = HttpRequest::builder()
@@ -1049,14 +942,14 @@ mod tests {
     #[test]
     fn the_deadline_follows_the_configured_timeout_and_the_retries() {
         assert_eq!(
-            call_deadline(10, 1),
-            Duration::from_millis(10 * 3 * 1000 + CLIENT_BACKOFF_TOTAL_MS + 3 * 1000)
+            call_deadline(10),
+            Duration::from_millis(10 * 3 * 1000 + CLIENT_BACKOFF_TOTAL_MS)
         );
     }
 
     #[test]
     fn a_slow_request_timeout_is_not_cut_at_the_old_120_second_deadline() {
-        assert!(call_deadline(300, 10) > Duration::from_secs(120));
+        assert!(call_deadline(300) > Duration::from_secs(120));
     }
 
     #[test]
@@ -1071,7 +964,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_bare_colon_host_does_not_pass_the_ipv6_allowlist() {
-        let mut state = state(&[], None);
+        let mut state = state(&[]);
         state.allowed_hosts = Arc::new(vec!["::1".to_owned()]);
         let router = host_app(state);
         let request = HttpRequest::builder()
