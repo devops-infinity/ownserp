@@ -6,6 +6,10 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Fixed
+
+- On Windows, the profile and ledger use `%APPDATA%\ownserp` and `%LOCALAPPDATA%\ownserp` when `HOME` is unset, instead of the working directory.
+
 ## [0.1.4] - 2026-10-24
 
 ### Added

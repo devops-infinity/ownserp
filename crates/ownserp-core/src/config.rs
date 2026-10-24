@@ -302,19 +302,30 @@ fn read_profile(path: &Path) -> Result<Profile> {
 }
 
 pub fn default_config_dir() -> PathBuf {
-    base_dir("XDG_CONFIG_HOME", ".config").join("ownserp")
+    base_dir("XDG_CONFIG_HOME", ".config", "APPDATA").join("ownserp")
 }
 
 pub fn default_data_dir() -> PathBuf {
-    base_dir("XDG_DATA_HOME", ".local/share").join("ownserp")
+    base_dir("XDG_DATA_HOME", ".local/share", "LOCALAPPDATA").join("ownserp")
 }
 
-fn base_dir(variable: &str, fallback: &str) -> PathBuf {
-    std::env::var_os(variable)
+fn base_dir(variable: &str, fallback: &str, windows_variable: &str) -> PathBuf {
+    if let Some(path) = std::env::var_os(variable)
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(fallback)))
-        .unwrap_or_else(|| PathBuf::from("."))
+    {
+        return path;
+    }
+    if let Some(home) = std::env::var_os("HOME") {
+        return PathBuf::from(home).join(fallback);
+    }
+    #[cfg(windows)]
+    if let Some(path) = std::env::var_os(windows_variable) {
+        return PathBuf::from(path);
+    }
+    #[cfg(not(windows))]
+    let _ = windows_variable;
+    PathBuf::from(".")
 }
 
 pub fn keychain_get() -> Result<Option<SecretString>> {
