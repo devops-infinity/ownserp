@@ -6,6 +6,23 @@ All notable changes to this project are recorded here. The format follows Keep a
 
 The minimum supported Rust version is 1.89. Raising it is recorded in this file and ships in a minor release.
 
+## [0.1.2] - 2026-10-24
+
+### Fixed
+
+- The binary crate description now starts with OwnSERP, so crates.io shows the product name.
+- The secret scan reads source only, after a rustdoc search index matched a rule by accident on every release build.
+
+### Added
+
+- An npm loader, `@devops-infinity/ownserp`, that downloads the pinned Linux x86_64 binary, checks it against the published SHA-256, and runs it.
+- A project `.mcp.json` that starts the server with the key from the client environment.
+
+### Changed
+
+- The release script stamps the npm package and the version the loader downloads.
+- The manifest names both the cargo and npm packages for the MCP Registry.
+
 ## [0.1.1] - 2026-10-24
 
 ### Changed

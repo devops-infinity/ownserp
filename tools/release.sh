@@ -158,6 +158,10 @@ prepare() {
 	cargo metadata --format-version 1 >/dev/null
 	set_manifest_version server.json "$new"
 	set_manifest_version mcpb/manifest.json "$new"
+	if [[ -f Dockerfile ]]; then
+		sed -i.bak "s/org.opencontainers.image.version=\"[0-9.]*\"/org.opencontainers.image.version=\"$new\"/" Dockerfile
+		rm -f Dockerfile.bak
+	fi
 	if [[ -f packages/npm/package.json ]]; then
 		set_manifest_version packages/npm/package.json "$new"
 		sed -i.bak "s/^const VERSION = \".*\";/const VERSION = \"$new\";/" packages/npm/bin/ownserp.js

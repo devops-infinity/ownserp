@@ -1745,7 +1745,7 @@ dependencies = [
 
 [[package]]
 name = "ownserp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -1757,7 +1757,7 @@ dependencies = [
 
 [[package]]
 name = "ownserp-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "axum",
  "getrandom 0.4.3",
