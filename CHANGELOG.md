@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-10-25
+
 ### Fixed
 
 - A call that was paid for and written to the ledger no longer comes back as an error. The cost object reads the totals this process already holds, so a busy ledger can no longer fail a result whose row was written.
