@@ -106,6 +106,7 @@ struct LedgerState {
 #[derive(Clone)]
 pub struct Ledger {
     state: Arc<Mutex<LedgerState>>,
+    snapshot: Arc<Mutex<Totals>>,
     healthy: Arc<AtomicBool>,
 }
 
@@ -158,6 +159,7 @@ impl Ledger {
             );
         }
         drop(locked);
+        let published = cursor.totals.clone();
         Ok(Self {
             state: Arc::new(Mutex::new(LedgerState {
                 path,
@@ -166,6 +168,7 @@ impl Ledger {
                 pending: 0,
                 lock_wait,
             })),
+            snapshot: Arc::new(Mutex::new(published)),
             healthy: Arc::new(AtomicBool::new(true)),
         })
     }
@@ -184,6 +187,7 @@ impl Ledger {
         loop {
             if !file_matches(&state.path, &state.file)? {
                 state.reload(&mut reloads)?;
+                self.publish(&state.cursor.totals);
                 continue;
             }
             let handle = clone_handle(&state.file)?;
@@ -192,7 +196,11 @@ impl Ledger {
                 drop(locked);
                 continue;
             }
-            return state.write_row(record);
+            let row = state.write_row(record);
+            if row.is_ok() {
+                self.publish(&state.cursor.totals);
+            }
+            return row;
         }
     }
 
@@ -210,8 +218,10 @@ impl Ledger {
             if state.catch_up(false)? == CatchUp::Replaced {
                 drop(locked);
                 state.reload(&mut reloads)?;
+                self.publish(&state.cursor.totals);
                 continue;
             }
+            self.publish(&state.cursor.totals);
             let committed = state.cursor.totals.credits.saturating_add(state.pending);
             if committed.saturating_add(u64::from(credits)) > budget {
                 return Err(Error::BudgetRefused(format!(
@@ -242,10 +252,28 @@ impl Ledger {
             if state.catch_up(false)? == CatchUp::Replaced {
                 drop(locked);
                 state.reload(&mut reloads)?;
+                self.publish(&state.cursor.totals);
                 continue;
             }
+            self.publish(&state.cursor.totals);
             return Ok(state.cursor.totals.clone());
         }
+    }
+
+    pub fn snapshot(&self) -> Totals {
+        let published = match self.snapshot.lock() {
+            Ok(published) => published,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        published.clone()
+    }
+
+    fn publish(&self, totals: &Totals) {
+        let mut published = match self.snapshot.lock() {
+            Ok(published) => published,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        *published = totals.clone();
     }
 
     pub fn pending(&self) -> Result<u64> {
@@ -965,6 +993,84 @@ mod tests {
         let mut state = ledger.lock().expect("state");
         assert_eq!(state.catch_up(true).expect("catch up"), CatchUp::Replaced);
         drop(state);
+        drop(ledger);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_snapshot_never_waits_for_the_file_lock() {
+        let path = temp_path("snapshot-fast");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::open(&path).expect("ledger");
+        ledger.append(record()).expect("append");
+        let holder = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let releaser = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(400));
+            let _ = holder.unlock();
+        });
+        let started = Instant::now();
+        let totals = ledger.snapshot();
+        let elapsed = started.elapsed();
+        assert_eq!(totals.calls, 1);
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "the snapshot waited {elapsed:?} for a held file lock"
+        );
+        let _ = releaser.join();
+        drop(ledger);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_snapshot_includes_rows_from_another_handle() {
+        let path = temp_path("snapshot-shared");
+        let _ = std::fs::remove_file(&path);
+        let first = Ledger::open(&path).expect("first");
+        let second = Ledger::open(&path).expect("second");
+        first.append(record()).expect("first row");
+        second.append(record()).expect("second row");
+        first.append(record()).expect("third row");
+        assert_eq!(first.snapshot().calls, 3);
+        assert_eq!(
+            first.snapshot().calls,
+            first.totals().expect("totals").calls
+        );
+        drop((first, second));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_snapshot_never_waits_for_the_state_mutex() {
+        let path = temp_path("snapshot-mutex");
+        let _ = std::fs::remove_file(&path);
+        let ledger = Ledger::open(&path).expect("ledger");
+        ledger.append(record()).expect("append");
+        let holder = OpenOptions::new()
+            .read(true)
+            .append(true)
+            .open(&path)
+            .expect("holder");
+        holder.try_lock().expect("exclusive lock");
+        let writer = {
+            let ledger = ledger.clone();
+            std::thread::spawn(move || ledger.append(record()))
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        let started = Instant::now();
+        let totals = ledger.snapshot();
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_millis(100),
+            "the snapshot waited {elapsed:?} behind a thread that holds the state mutex"
+        );
+        assert_eq!(totals.calls, 1);
+        let _ = holder.unlock();
+        assert!(writer.join().expect("join").is_ok());
         drop(ledger);
         let _ = std::fs::remove_file(&path);
     }
