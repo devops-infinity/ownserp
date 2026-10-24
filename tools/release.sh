@@ -149,7 +149,7 @@ prepare() {
 	date="$(date +%F)"
 	say INFO "preparing $CURRENT -> $new"
 	if [[ "$DRY_RUN" -eq 1 ]]; then
-		say INFO "dry run: would set the version in Cargo.toml, Cargo.lock, server.json, and mcpb/manifest.json"
+		say INFO "dry run: would set the version in Cargo.toml, Cargo.lock, server.json, mcpb/manifest.json, and the npm package"
 		say INFO "dry run: would add the CHANGELOG heading ## [$new] - $date"
 		return 0
 	fi
@@ -158,6 +158,11 @@ prepare() {
 	cargo metadata --format-version 1 >/dev/null
 	set_manifest_version server.json "$new"
 	set_manifest_version mcpb/manifest.json "$new"
+	if [[ -f packages/npm/package.json ]]; then
+		set_manifest_version packages/npm/package.json "$new"
+		sed -i.bak "s/^const VERSION = \".*\";/const VERSION = \"$new\";/" packages/npm/bin/ownserp.js
+		rm -f packages/npm/bin/ownserp.js.bak
+	fi
 	insert_changelog_heading "$new" "$date"
 	say SUCCESS "prepared $new"
 	say INFO "next: write the CHANGELOG entries, commit on a sazzad/ branch, and merge into main"
