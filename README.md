@@ -17,6 +17,12 @@ An MCP server, written in Rust, for the Serper.dev search API. It turns each Ser
 You need Rust 1.89 or newer. The repository pins 1.99.1 in `rust-toolchain.toml`.
 
 ```sh
+cargo install ownserp
+```
+
+From this checkout instead:
+
+```sh
 cargo install --path crates/ownserp --locked
 ```
 
@@ -202,6 +208,8 @@ Publishing to crates.io, npm, Homebrew, the MCP Registry, and ghcr is a maintain
 The crate pins Rust 1.99.1 and declares an MSRV of 1.89, which is above the floor of every dependency. The MSRV is raised only when a dependency or a language feature needs it, and the change is recorded in `CHANGELOG.md` and ships in a minor release.
 
 The edition is 2024. When a new edition ships, the upgrade runs in one change: `cargo update`, `cargo fix --edition`, the `edition` field bump, `cargo fmt`, then the full gate from the Development section above. No edition is kept alive beside the new one.
+
+mcp-name: io.github.devops-infinity/ownserp
 
 ## License
 
