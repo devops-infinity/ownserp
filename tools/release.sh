@@ -189,9 +189,9 @@ package() {
 	if [[ "$MAKE_TAG" -eq 1 ]]; then
 		git rev-parse -q --verify "refs/tags/v$CURRENT" >/dev/null && die "tag v$CURRENT already exists"
 		if [[ -n "$(git config user.signingkey || true)" ]]; then
-			git tag -s "v$CURRENT" -m "ownserp $CURRENT"
+			git tag -s "v$CURRENT" -m "OwnSERP $CURRENT"
 		else
-			git tag -a "v$CURRENT" -m "ownserp $CURRENT"
+			git tag -a "v$CURRENT" -m "OwnSERP $CURRENT"
 		fi
 		say SUCCESS "created tag v$CURRENT (not pushed)"
 	fi
