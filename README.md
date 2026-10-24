@@ -17,6 +17,7 @@ OwnSERP is an MCP server, written in Rust, for the Serper.dev search API. It tur
 You need Rust 1.89 or newer. The repository pins 1.99.1 in `rust-toolchain.toml`.
 
 ```sh
+brew install devops-infinity/tap/ownserp
 cargo install ownserp
 ```
 
@@ -48,7 +49,7 @@ export SERPER_API_KEY="your key"
 printf '%s' "$SERPER_API_KEY" | ownserp config set-api-key
 ```
 
-- Client JSON config, where the client injects the env block it already holds:
+- Client JSON config, where the client injects the env block it already holds. This repository ships a `.mcp.json` that runs `ownserp serve`, and the server reads the key from the environment your client passes, so an exported `SERPER_API_KEY` is enough:
 
 ```json
 {
@@ -201,7 +202,7 @@ There is no GitHub workflow and no hosted pipeline. Every check and every releas
 - `mcpb/manifest.json` is the bundle manifest for a binary server with a keychain-backed key.
 - `Dockerfile` builds a small image that serves Streamable HTTP, with both base images pinned by digest.
 
-Publishing to crates.io, npm, Homebrew, the MCP Registry, and ghcr is a maintainer step and is not done by this repository.
+Published now: crates.io (`ownserp` and `ownserp-core`), the Homebrew tap at `devops-infinity/tap`, and GitHub releases with a Linux archive and checksum. An OCI image is built from the Dockerfile. npm and the MCP Registry remain unpublished; npm needs an authenticated account, and the registry needs an interactive `mcp-publisher login github`.
 
 ## Toolchain policy
 

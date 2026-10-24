@@ -1,6 +1,6 @@
 [package]
 name = "ownserp"
-description = "MCP server for the Serper.dev search API, over stdio and Streamable HTTP"
+description = "OwnSERP, an MCP server for the Serper.dev search API, over stdio and Streamable HTTP"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
