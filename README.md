@@ -6,13 +6,14 @@ An MCP server for the Serper.dev search API, with per-call credit accounting.
 
 ## Status
 
-Stable at 1.0. Every release ships from a tagged commit after the full local gate passes. The semantic version promise covers the command line, the profile schema, the ledger format, and the tool result shape. The Rust API of the `ownserp-core` crate is not covered by it, so a minor release may rename a public item there. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
+Stable at 2.0. Every release ships from a tagged commit after the full local gate passes. The semantic version promise covers the command line, the profile schema, the ledger format, and the tool result shape. The Rust API of the `ownserp-core` crate is not covered by it, so a minor release may rename a public item there. From 1.0, the command surface, the configuration schema, the ledger format, and the tool result shape follow semantic versioning: a breaking change to any of them takes a major version, a new tool, flag, or setting takes a minor version, and a fix takes a patch. `CHANGELOG.md` records every change.
 
 ## Contents
 
 - [Overview](#overview)
 - [Requirements](#requirements)
 - [Installation](#installation)
+- [Upgrading](#upgrading)
 - [Quick start](#quick-start)
 - [Connect a client](#connect-a-client)
 - [API key](#api-key)
@@ -123,6 +124,10 @@ Use the PowerShell installer above, or download `ownserp-x86_64-pc-windows-msvc.
 The bundle carries the Linux x86_64 binary only. On another architecture, install the archive for that platform instead.
 
 Download `ownserp-<version>.mcpb` from the release page and open it in a client that supports MCP Bundles. The bundle asks for the API key and stores it in the OS keychain.
+
+## Upgrading
+
+`ownserp update` asks GitHub for the latest release and prints the command that fits this install: `brew upgrade ownserp`, `cargo install --locked ownserp`, the npm global install, or the container pull. It checks and reports only, so the upgrade runs through the channel you installed with and that channel's own signing and review stay in force. `ownserp update --json` gives `current`, `latest`, `updateAvailable`, and `command` for scripts. The check calls `api.github.com` and nothing else, and the server itself still sends no telemetry.
 
 ## Quick start
 
@@ -374,11 +379,11 @@ A call that Serper rejects with a 4xx or 5xx status, answers with a rate limit, 
 ownserp audit verify
 ```
 
-On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A partial final line left by a killed write is dropped under that lock, and the chain check covers every complete row. On Windows a running server does not notice a rotate, so restart it to pick up the new chain. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
+On Unix the ledger directory is owner-only (0700) and the file is owner-only (0600). On Windows it sits under `%LOCALAPPDATA%`, so it inherits the user profile's access rules. One line is capped at 1 MiB. Any number of `ownserp serve` processes on one machine share this one file, one hash chain, and one running total. A process takes the file lock only while it reads the rows written since its last call and appends its own row, so no process holds the lock for as long as it runs. A final row that only lost its newline is kept, because its hash proves it was written; anything less complete is dropped under that lock, and the chain check covers every complete row. Each row carries the format version, and a file written by a newer binary is refused by name instead of being read as damage. On Windows a running server does not notice a rotate, so restart it to pick up the new chain. The arguments hash is an HMAC, a keyed hash, keyed by `args.key`, created beside the ledger directory with owner-only permissions, so the ledger alone cannot confirm a guessed query.
 
 `session_budget_credits` counts every credit in the chain, whichever process wrote it. A credit that another process has reserved but not yet written is invisible to that check, so the budget can be passed by at most the number of running processes times the per-call credit ceiling. That bound holds only when a ceiling is set. With no ceiling it is the process count times the largest single reservation, which is 900 credits for a 100-query maps or lens batch. The response cache stays per process: each process keeps its own cache. `OWN_SERPER_LEDGER_DIR` still gives a client its own separate ledger when that is what you want.
 
-To close a ledger without losing it, run `ownserp audit rotate`. It verifies the chain and archives the file beside the original with a timestamp. Every running server opens a fresh chain on its next write.
+To close a ledger without losing it, run `ownserp audit rotate`. It verifies the chain and archives the file beside the original with a timestamp. Every running server opens a fresh chain on its next write. When the chain is already damaged, `ownserp audit rotate --archive-damaged` archives the file up to the last row that verified, so a fresh chain can start and the spend history stays readable. `ownserp audit remove --yes` deletes the live ledger, its archives, and the arguments key, and prints each path it removed; without `--yes` it only says what it would remove.
 
 Dollar figures come from the pack tier: `starter` (default), `standard`, `scale`, `ultimate`, or `custom` with `SERPER_USD_PER_1K`.
 
@@ -436,22 +441,26 @@ OWN_SERPER_BEARER_TOKENS="a random value of at least 32 characters" \
 
 ## Security
 
-The server holds one API key, sends queries only to Serper over TLS, and sends no telemetry. Results are treated as untrusted text. [SECURITY.md](SECURITY.md) states the reporting process, and the [threat model](docs/threat-model.md) states the assets, trust boundaries, controls, and residual risks.
+The server holds one API key, sends queries only to Serper over TLS, and sends no telemetry. The TLS root set is bundled into the binary, so a container without `ca-certificates` still verifies Serper; platform roots are added when they load. Results are treated as untrusted text. [SECURITY.md](SECURITY.md) states the reporting process, and the [threat model](docs/threat-model.md) states the assets, trust boundaries, controls, and residual risks.
 
 ## Troubleshooting
 
-Each error carries a stable code, a message, a remedy, and, for a network failure, up to three sanitized causes that name a DNS, TLS, or connection problem. `ownserp` exits 0 on success, 1 on a runtime failure, and 2 on a usage error. `ownserp doctor` exits 1 when no key is configured or when the Serper health probe fails; a balance the account endpoint does not report is printed but is not a failure. The codes and their fixes:
+Each error carries a stable code, a message, a remedy, and, for a network failure, up to three sanitized causes that name a DNS, TLS, or connection problem. An HTTP transport refusal carries the same object, with the codes `serper.unauthorized`, `serper.auth_rate_limited`, `serper.host_refused`, `serper.origin_refused`, and `serper.busy`. `ownserp` exits 0 on success, 1 on a runtime failure, and 2 on a usage error. `ownserp doctor` exits 1 when no key is configured or when the Serper health probe fails; a balance the account endpoint does not report is printed but is not a failure. The codes and their fixes:
 
-- `serper.auth_missing`. No key is configured. Set `SERPER_API_KEY`, or run `ownserp config set-api-key`.
+- `serper.auth_missing`. No key is configured, or the OS keychain could not be read; the cause names which. Set `SERPER_API_KEY` or run `ownserp config set-api-key`, then restart the server.
 - `serper.auth_failed`. Serper rejected the key. Check it at https://serper.dev/api-keys.
-- `serper.rate_limited`. The upstream rate limit or the credit balance stopped the call. Serper publishes no retry header, and the server does not retry a 429.
-- `serper.budget_refused`. The per-call ceiling or the session budget would be passed. Raise it in the profile, or lower `num`.
+- `serper.credits_exhausted`. The Serper account is out of credits. Top up at https://serper.dev/dashboard, then call again.
+- `serper.rate_limited`. The upstream rate limit stopped the call. Serper publishes no retry header, and the server does not retry a 429.
+- `serper.budget_refused`. The per-call ceiling or the session budget would be passed. Raise it in the profile or the environment and restart the server, or lower `num`.
 - `serper.bad_request`. An argument failed validation. The message names the field.
-- `serper.tool_not_found`. The tool is not in this configuration's list. Call `tools/list`, and set `enable_batch` for the batch tool.
-- `serper.config_error`. A setting is malformed. `ownserp doctor` shows each resolved value and its source.
+- `serper.tool_not_found`. The tool is not in this configuration's list. Call `tools/list` and use only the names it returns.
+- `serper.tool_disabled`. The tool exists but a setting keeps it off. Set the key the message names, such as `enable_batch`, and restart the server.
+- `serper.deadline_exceeded`. The call passed the server's deadline and may already have been billed. Retry with a narrower request, or raise `request_timeout_secs`.
+- `serper.config_error`. A setting is malformed. `ownserp doctor` shows each resolved value and its source, even when the setting that failed is the one it cannot resolve.
 - `serper.keychain_error`. The OS keychain is unavailable. Use `SERPER_API_KEY` on a headless host.
+- `serper.ledger_fault`. The local call ledger could not be read or written, or another process holds it. Check the ledger directory and free space, then restart; if the chain is damaged, run `ownserp audit rotate --archive-damaged`.
 - `serper.upstream_failed`. Serper or the network failed after retries. Check https://serper.betteruptime.com.
-- `serper.cancelled`. The client cancelled the request.
+- `serper.cancelled`. The request was cancelled on the way out.
 - `serper.internal_error`. An unexpected local failure. Retry once, then open an issue with the message.
 
 ## Development
@@ -463,7 +472,9 @@ cargo install --path crates/ownserp --locked
 tools/verify.sh
 ```
 
-`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, unused dependencies, the 80 percent line coverage floor, and a secret scan of the tree and of the git history. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
+`tools/verify.sh` runs the whole gate locally: formatting, check, clippy with warnings denied, tests, doc tests, docs, advisories, dependency policy, suppression recheck dates, unused dependencies, the manifest versions, the 80 percent line coverage floor, and a secret scan of the tree and of the git history. A check whose tool is missing is reported as skipped, and `OWN_SERPER_STRICT_GATE=1` turns any skip into a failure; the release runs that way.
+
+`tools/smoke.sh [base-url]` probes a running server: `/healthz`, `/readyz`, `/metrics`, the MCP handshake, and `tools/list`. It reads `OWN_SERPER_BEARER_TOKENS` when the server requires a token. Run it after a deployment.
 
 The release build itself runs in `.github/workflows/release.yml` on a matrix of native runners when a `v*` tag is pushed.
 

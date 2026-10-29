@@ -20,6 +20,7 @@ mod config;
 mod doctor;
 mod output;
 mod serve;
+mod update;
 
 fn main() -> ExitCode {
     init_tracing();
@@ -36,6 +37,12 @@ fn main() -> ExitCode {
         }
         Err(error) => {
             eprintln!("ownserp: {error:#}");
+            if let Some(remedy) = error
+                .downcast_ref::<ownserp_core::Error>()
+                .map(ownserp_core::Error::remedy)
+            {
+                eprintln!("ownserp: {remedy}");
+            }
             ExitCode::FAILURE
         }
     }
@@ -47,6 +54,7 @@ fn run(parsed: cli::Cli) -> anyhow::Result<()> {
         cli::Command::Doctor(args) => doctor::run(args),
         cli::Command::Config(args) => config::run(args),
         cli::Command::Audit(args) => audit::run(args),
+        cli::Command::Update { json } => update::run(json),
         cli::Command::Completions { shell } => {
             let mut command = cli::Cli::command();
             let mut buffer = Vec::new();

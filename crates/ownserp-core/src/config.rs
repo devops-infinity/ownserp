@@ -69,6 +69,14 @@ impl Settings {
     where
         F: Fn(&str) -> Option<String>,
     {
+        Self::load_with_keychain(overrides, env, keychain_get)
+    }
+
+    pub fn load_with_keychain<F, K>(overrides: Overrides, env: F, keychain: K) -> Result<Self>
+    where
+        F: Fn(&str) -> Option<String>,
+        K: Fn() -> Result<Option<SecretString>>,
+    {
         let requested_profile = overrides
             .profile
             .clone()
@@ -105,11 +113,16 @@ impl Settings {
         };
         let api_key = env("SERPER_API_KEY")
             .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-            .map(SecretString::from);
+            .filter(|value| !value.is_empty());
+        if let Some(value) = &api_key
+            && let Some(problem) = key_shape_error(value)
+        {
+            return Err(Error::Config(problem));
+        }
+        let api_key = api_key.map(SecretString::from);
         let (api_key, api_key_source, api_key_error) = match api_key {
             Some(key) => (Some(key), ApiKeySource::Environment, None),
-            None => match keychain_get() {
+            None => match keychain() {
                 Ok(Some(key)) => (Some(key), ApiKeySource::Keychain, None),
                 Ok(None) => (None, ApiKeySource::Missing, None),
                 Err(error) => (
@@ -218,7 +231,9 @@ impl Settings {
     }
 
     pub fn require_api_key(&self) -> Result<&SecretString> {
-        self.api_key.as_ref().ok_or(Error::MissingApiKey)
+        self.api_key.as_ref().ok_or_else(|| Error::MissingApiKey {
+            cause: self.api_key_error.clone(),
+        })
     }
 
     pub const fn api_key_source(&self) -> ApiKeySource {
@@ -371,40 +386,65 @@ const MAX_PROFILE_BYTES: u64 = 64 * 1024;
 const MAX_CACHE_BYTES: usize = 1024 * 1024 * 1024;
 const MAX_REQUEST_TIMEOUT_SECS: u64 = 600;
 
+fn key_shape_error(key: &str) -> Option<String> {
+    if key.chars().count() > 512 {
+        return Some(
+            "SERPER_API_KEY is longer than 512 characters; copy the key from https://serper.dev/api-keys again"
+                .to_owned(),
+        );
+    }
+    if key
+        .chars()
+        .any(|character| character.is_whitespace() || character.is_control())
+    {
+        return Some(
+            "SERPER_API_KEY holds whitespace or a control character; quote the value or copy the key again"
+                .to_owned(),
+        );
+    }
+    None
+}
+
 fn read_profile(path: &Path) -> Result<Profile> {
     use std::io::Read as _;
 
     let metadata = std::fs::metadata(path).map_err(|error| {
         Error::Config(format!(
-            "cannot inspect profile {}: {error}",
+            "cannot inspect profile {}: {error}; fix its permissions or remove it",
             path.display()
         ))
     })?;
     if !metadata.is_file() {
         return Err(Error::Config(format!(
-            "profile {} is not a regular file",
+            "profile {} is not a regular file; replace it with a TOML file or remove it",
             path.display()
         )));
     }
     if metadata.len() > MAX_PROFILE_BYTES {
         return Err(Error::Config(format!(
-            "profile {} is {} bytes, above the {MAX_PROFILE_BYTES} byte cap",
+            "profile {} is {} bytes, above the {MAX_PROFILE_BYTES} byte cap; shorten it",
             path.display(),
             metadata.len()
         )));
     }
     let file = std::fs::File::open(path).map_err(|error| {
-        Error::Config(format!("cannot read profile {}: {error}", path.display()))
+        Error::Config(format!(
+            "cannot read profile {}: {error}; fix its permissions or remove it",
+            path.display()
+        ))
     })?;
     let mut raw = String::new();
     file.take(MAX_PROFILE_BYTES.saturating_add(1))
         .read_to_string(&mut raw)
         .map_err(|error| {
-            Error::Config(format!("cannot read profile {}: {error}", path.display()))
+            Error::Config(format!(
+                "cannot read profile {}: {error}; fix its permissions or remove it",
+                path.display()
+            ))
         })?;
     if raw.len() as u64 > MAX_PROFILE_BYTES {
         return Err(Error::Config(format!(
-            "profile {} grew past the {MAX_PROFILE_BYTES} byte cap while it was read",
+            "profile {} grew past the {MAX_PROFILE_BYTES} byte cap while it was read; shorten it",
             path.display()
         )));
     }
@@ -414,7 +454,7 @@ fn read_profile(path: &Path) -> Result<Profile> {
         && *version > 1
     {
         return Err(Error::Config(format!(
-            "{} is version {version}, newer than this binary supports (1)",
+            "{} is version {version}, newer than this binary supports (1); upgrade ownserp or set version = 1",
             path.display()
         )));
     }

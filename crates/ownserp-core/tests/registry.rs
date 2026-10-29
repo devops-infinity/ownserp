@@ -66,12 +66,17 @@ fn catalog_tools_have_prefixed_unique_names_and_complete_schemas() {
             tool.name
         );
         let annotations = tool.annotations.as_ref().expect("annotations");
-        assert_eq!(annotations.read_only_hint, Some(true));
-        assert_eq!(annotations.destructive_hint, Some(false));
         let free = matches!(
             tool.name.as_ref(),
             "serper_locations" | "serper_session" | "serper_health"
         );
+        assert_eq!(
+            annotations.read_only_hint,
+            Some(free),
+            "{} spends credits, so it must not report read-only",
+            tool.name
+        );
+        assert_eq!(annotations.destructive_hint, Some(false));
         assert_eq!(
             annotations.idempotent_hint,
             Some(free),

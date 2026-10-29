@@ -6,7 +6,9 @@ use crate::config::Settings;
 use crate::error::{Error, Result};
 
 pub async fn serve_stdio(settings: Settings) -> Result<()> {
-    let handler = OwnserpHandler::new(settings)?;
+    let deadline = super::http::call_deadline(settings.request_timeout_secs());
+    let handler = OwnserpHandler::with_deadline(settings, Some(deadline))?;
+    let handler_cancel = handler.cancellation_token();
     let mut shutdown = std::pin::pin!(shutdown_signal());
     let service = tokio::select! {
         result = handler.serve(stdio()) => result
@@ -25,8 +27,11 @@ pub async fn serve_stdio(settings: Settings) -> Result<()> {
             }),
         },
         () = &mut shutdown => {
+            handler_cancel.cancel();
             token.cancel();
-            let _ = joined.await;
+            if tokio::time::timeout(super::CANCELLED_CALL_GRACE, joined).await.is_err() {
+                tracing::warn!("the stdio session did not stop within the cancel grace period");
+            }
             Ok(())
         }
     }

@@ -25,8 +25,13 @@ pub(crate) enum Command {
     Doctor(DoctorArgs),
     #[command(about = "Store, show, or remove the Serper API key")]
     Config(ConfigArgs),
-    #[command(about = "Verify or rotate the call ledger")]
+    #[command(about = "Verify, rotate, or remove the call ledger")]
     Audit(AuditArgs),
+    #[command(about = "Check the latest release and print the command that upgrades this install")]
+    Update {
+        #[arg(long, help = "Print the answer as JSON")]
+        json: bool,
+    },
     #[command(about = "Print shell completions for a supported shell")]
     Completions {
         #[arg(value_enum, help = "Shell to generate completions for")]
@@ -131,7 +136,9 @@ pub(crate) struct ConfigArgs {
 pub(crate) enum ConfigAction {
     #[command(about = "Read the API key from stdin and store it in the OS keychain")]
     SetApiKey,
-    #[command(about = "Print the resolved settings with the key masked")]
+    #[command(
+        about = "Print a short settings summary with the key masked; doctor prints every value"
+    )]
     Show(ConfigShowArgs),
     #[command(about = "Remove the stored API key from the OS keychain")]
     DeleteApiKey,
@@ -167,9 +174,13 @@ pub(crate) enum AuditAction {
     Verify {
         #[arg(
             long = "file",
-            help = "Ledger file, defaulting to calls.jsonl in the data directory"
+            help = "Ledger file, defaulting to calls.jsonl in the ledger directory"
         )]
         ledger_file: Option<PathBuf>,
+        #[arg(long, help = "Path to a TOML profile file")]
+        profile: Option<PathBuf>,
+        #[arg(long, help = "Directory that holds the call ledger")]
+        ledger_dir: Option<PathBuf>,
     },
     #[command(
         about = "Verify the chain, archive the ledger, and start a fresh chain on the next write"
@@ -177,9 +188,30 @@ pub(crate) enum AuditAction {
     Rotate {
         #[arg(
             long = "file",
-            help = "Ledger file, defaulting to calls.jsonl in the data directory"
+            help = "Ledger file, defaulting to calls.jsonl in the ledger directory"
         )]
         ledger_file: Option<PathBuf>,
+        #[arg(long, help = "Path to a TOML profile file")]
+        profile: Option<PathBuf>,
+        #[arg(long, help = "Directory that holds the call ledger")]
+        ledger_dir: Option<PathBuf>,
+        #[arg(
+            long = "archive-damaged",
+            help = "Archive a ledger whose chain is broken, up to the last good row, so a fresh chain can start"
+        )]
+        archive_damaged: bool,
+    },
+    #[command(about = "Delete the local ledger, its archives, and the arguments key")]
+    Remove {
+        #[arg(long, help = "Path to a TOML profile file")]
+        profile: Option<PathBuf>,
+        #[arg(long, help = "Directory that holds the call ledger")]
+        ledger_dir: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Confirm the deletion; without this flag nothing is removed"
+        )]
+        yes: bool,
     },
 }
 

@@ -26,7 +26,7 @@ The server crosses four boundaries: client to server over stdio, or over HTTP be
 
 ### Hidden tools
 
-Control: `tools/list` omits `serper_search_batch` while it is disabled, and `tools/call` refuses any name outside the current catalog with `serper.tool_not_found`. The batch handler repeats the check. Residual risk: none known.
+Control: `tools/list` omits `serper_search_batch` while it is disabled, and `tools/call` answers a call to that name with `serper.tool_disabled`, naming `enable_batch`, so the client learns the tool exists and how to turn it on. Any other name outside the catalog is refused with `serper.tool_not_found`. Residual risk: none known.
 
 ### Prompt injection through results
 
@@ -67,6 +67,10 @@ Control: every response carries `x-content-type-options: nosniff` and `cache-con
 ### Invisible characters and spoofed text
 
 Control: the sanitizer drops zero-width, bidi, variation-selector, tag-block, and control characters, and collapses whitespace. Every capped string is marked. Residual risk: homoglyph substitution is not addressed; a Cyrillic letter that looks Latin still reads as Latin to a model.
+
+### TLS trust
+
+Control: the client verifies Serper and the release lookup against the Mozilla root set bundled into the binary, and adds the platform roots when they load. A host with no CA bundle, a keychain-less macOS shell, and a static musl build all verify the same chains, so a missing system store cannot turn into a failed or downgraded handshake. The platform store is an addition, never the only source, so an operator with a private CA gets it only when that store loads. Residual risk: a host that must trust a private CA inside a container without ca-certificates needs that CA installed in the image.
 
 ### Supply chain
 

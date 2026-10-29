@@ -28,12 +28,12 @@ pub struct SerperClient {
 
 impl SerperClient {
     pub fn new(settings: &Settings) -> Result<Self> {
-        install_crypto_provider();
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(settings.request_timeout_secs()))
             .connect_timeout(Duration::from_secs(CONNECT_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::none())
             .user_agent(format!("ownserp/{}", crate::VERSION))
+            .tls_backend_preconfigured(tls_client_config()?)
             .build()
             .map_err(|error| Error::network("building the HTTP client", error))?;
         Ok(Self {
@@ -247,6 +247,11 @@ fn retryable_status(status: u16) -> bool {
     (500..600).contains(&status) && status != 501
 }
 
+fn mentions_exhausted_credits(message: &str) -> bool {
+    let lowered = message.to_lowercase();
+    lowered.contains("not enough credits") || lowered.contains("insufficient credits")
+}
+
 fn retryable_error(error: &reqwest::Error) -> bool {
     // A timeout can follow a request the upstream already billed, so only a failed connect is retried.
     error.is_connect()
@@ -290,8 +295,11 @@ async fn read_response(response: Response) -> Result<Value> {
         .unwrap_or_else(|| status_text(code));
     let (message, _) =
         crate::projection::cap(&crate::projection::sanitize(raw), MAX_ERROR_MESSAGE_CHARS);
-    let exhausted = code == 400 && message.to_lowercase().contains("not enough credits");
-    if code == 429 || exhausted {
+    let exhausted = code == 400 && mentions_exhausted_credits(&message);
+    if exhausted {
+        return Err(Error::CreditsExhausted { message });
+    }
+    if code == 429 {
         return Err(Error::RateLimited { message });
     }
     let message = if (300..400).contains(&code) {
@@ -349,6 +357,25 @@ fn install_crypto_provider() {
     let _ = rustls::crypto::ring::default_provider().install_default();
 }
 
+pub(crate) fn tls_client_config() -> Result<rustls::ClientConfig> {
+    install_crypto_provider();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let native = rustls_native_certs::load_native_certs();
+    let _ = roots.add_parsable_certificates(native.certs);
+    if roots.is_empty() {
+        return Err(Error::Config(
+            "no TLS root certificates could be loaded; install ca-certificates or use the release binary"
+                .into(),
+        ));
+    }
+    let mut config = rustls::ClientConfig::builder()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +399,18 @@ mod tests {
             |name| map.get(name).cloned(),
         )
         .expect("settings")
+    }
+
+    #[test]
+    fn the_tls_config_carries_the_bundled_roots_and_alpn() {
+        let config = tls_client_config().expect("tls config");
+        assert_eq!(config.alpn_protocols, vec![b"http/1.1".to_vec()]);
+    }
+
+    #[test]
+    fn a_client_builds_with_the_shared_tls_config() {
+        let client = SerperClient::new(&settings()).expect("client");
+        assert!(client.has_api_key());
     }
 
     #[test]

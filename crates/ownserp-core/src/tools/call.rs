@@ -73,6 +73,12 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
                 path.display()
             )));
         }
+        Ok(metadata) if shared_with_others(&metadata) => {
+            return Err(Error::Config(format!(
+                "{} is readable or writable by another user; make it owner-only or remove it on purpose to start a new ledger chain",
+                path.display()
+            )));
+        }
         Ok(_) => return read_hash_key(&path),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => {
@@ -123,6 +129,17 @@ fn load_hash_key(ledger_dir: &std::path::Path) -> Result<[u8; 32]> {
             path.display()
         ))),
     }
+}
+
+#[cfg(unix)]
+fn shared_with_others(metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o077 != 0
+}
+
+#[cfg(not(unix))]
+fn shared_with_others(_metadata: &std::fs::Metadata) -> bool {
+    false
 }
 
 fn read_hash_key(path: &std::path::Path) -> Result<[u8; 32]> {
@@ -193,6 +210,24 @@ async fn dispatch(
     arguments: Option<&Map<String, Value>>,
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
+    let spec = crate::tools::specs::SPECS
+        .iter()
+        .find(|spec| spec.name == tool_name);
+    if let Some(spec) = spec
+        && let Some(switch) = crate::tools::specs::switch(spec)
+        && !crate::tools::specs::enabled(spec, &ctx.settings)
+    {
+        return Err(Error::ToolDisabled {
+            name: tool_name.to_owned(),
+            switch,
+        });
+    }
+    if spec
+        .and_then(|spec| spec.endpoint)
+        .is_some_and(|endpoint| endpoint.requires_key())
+    {
+        ctx.settings.require_api_key()?;
+    }
     match tool_name {
         "serper_search" => {
             search_from_args(ctx, Endpoint::Search, parse(arguments)?, cancellation).await
@@ -234,7 +269,9 @@ async fn dispatch(
         }
         "serper_health" => health(ctx, parse(arguments)?).await,
         "serper_session" => session_totals(ctx, parse(arguments)?).await,
-        other => Err(Error::InvalidArgs(format!("unknown tool: {other}"))),
+        other => Err(Error::UnknownTool {
+            name: other.chars().filter(|c| !c.is_control()).take(64).collect(),
+        }),
     }
 }
 
@@ -335,6 +372,12 @@ async fn search_and_record(
     } else {
         reported_credits.unwrap_or(credits)
     };
+    if cacheable && cache_age.is_none() {
+        let fetched = Arc::clone(&raw);
+        if let Err(error) = ctx.cache.put(key, fetched) {
+            tracing::warn!(%error, "the response could not be cached");
+        }
+    }
     let prepared: Result<(Value, usize, Option<String>, Option<String>)> = (|| {
         let projection = project(endpoint, &raw, preset)?;
         Ok((
@@ -345,15 +388,7 @@ async fn search_and_record(
         ))
     })();
     let (envelope, result_count, top_title, next_token) = match prepared {
-        Ok(parts) => {
-            if cacheable
-                && cache_age.is_none()
-                && let Err(error) = ctx.cache.put(key, Arc::clone(&raw))
-            {
-                tracing::warn!(%error, "the response could not be cached");
-            }
-            parts
-        }
+        Ok(parts) => parts,
         Err(error) => {
             append_call_or_log(
                 ctx,
@@ -413,11 +448,25 @@ async fn search_and_record(
     let mut fitted = fitted;
     set_cost(&mut fitted, &cost)?;
     let fitted = projection::fit_to_budget(fitted, projection::MAX_RESULT_BYTES);
+    let delivered = fitted
+        .get("results")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(result_count);
+    let top = first_title(&fitted).or(top_title);
+    let clipped = fitted
+        .get("truncated")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let text = match mode {
         TextMode::Full => serde_json::to_string(&fitted)?,
         TextMode::Summary => {
-            let mut line =
-                projection::summary_text(result_count, top_title.as_deref(), charged, cost.usd);
+            let mut line = projection::summary_text(delivered, top.as_deref(), charged, cost.usd);
+            if clipped {
+                line.push_str(
+                    "; clipped to fit the response budget: lower num, narrow the query, or use fields=minimal to see the rest",
+                );
+            }
             if let Some(token) = next_token.as_deref() {
                 let token = crate::projection::cap(&crate::projection::sanitize(token), 64).0;
                 line.push_str(&format!("; next page token: {token}"));
@@ -604,6 +653,16 @@ fn result_count(envelope: &Value) -> usize {
         .get("results")
         .and_then(Value::as_array)
         .map_or(0, Vec::len)
+}
+
+fn first_title(envelope: &Value) -> Option<String> {
+    envelope
+        .get("results")
+        .and_then(Value::as_array)
+        .and_then(|results| results.first())
+        .and_then(|first| first.get("title"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
 }
 
 fn placeholder_cost() -> CostInfo {
@@ -799,11 +858,6 @@ async fn batch(
     args: BatchArgs,
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
-    if !ctx.settings.enable_batch() {
-        return Err(Error::UnknownTool {
-            name: "serper_search_batch".to_owned(),
-        });
-    }
     let endpoint = args.kind.endpoint();
     let bodies = args.bodies()?;
     let total = args
@@ -922,14 +976,29 @@ async fn batch(
     let cost = cost_info(ctx, total, None);
     set_cost(&mut payload, &cost)?;
     let payload = projection::fit_to_budget(payload, projection::MAX_RESULT_BYTES);
+    let total_queries = output.entries.len();
+    let delivered_queries = payload
+        .get("entries")
+        .and_then(Value::as_array)
+        .map(Vec::len)
+        .unwrap_or(total_queries);
     let text = match args.text_mode() {
         TextMode::Full => serde_json::to_string(&payload)?,
-        TextMode::Summary => format!(
-            "{} queries; cost: {} credits ({})",
-            output.entries.len(),
-            cost.credits,
-            usd_text(cost.usd)
-        ),
+        TextMode::Summary => {
+            let mut line = format!(
+                "{} queries; cost: {} credits ({})",
+                delivered_queries,
+                cost.credits,
+                usd_text(cost.usd)
+            );
+            if delivered_queries < total_queries {
+                line.push_str(&format!(
+                    "; {} queries were left out to fit the response budget: re-run them in a smaller batch",
+                    total_queries - delivered_queries
+                ));
+            }
+            line
+        }
     };
     Ok(tool_result(payload, text))
 }
@@ -979,21 +1048,26 @@ async fn health(ctx: &ToolContext, _args: HealthArgs) -> Result<CallToolResult> 
 
 async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallToolResult> {
     let ledger = ctx.ledger.clone();
-    let (totals, pending) = match tokio::task::spawn_blocking(move || {
+    let (totals, pending, stale) = match tokio::task::spawn_blocking(move || {
         (ledger.totals(), ledger.pending())
     })
     .await
     {
         Ok((totals, pending)) => {
+            let stale = totals.is_err() || pending.is_err();
             if let Err(error) = &totals {
                 tracing::warn!(
                     %error,
                     "the ledger totals could not be caught up; reporting the last known snapshot"
                 );
             }
+            if let Err(error) = &pending {
+                tracing::warn!(%error, "the pending credits could not be read");
+            }
             (
                 totals.unwrap_or_else(|_| ctx.ledger.snapshot()),
                 pending.unwrap_or(0),
+                stale,
             )
         }
         Err(join_error) => {
@@ -1001,7 +1075,7 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
                 %join_error,
                 "the ledger task failed; reporting the last known snapshot"
             );
-            (ctx.ledger.snapshot(), 0)
+            (ctx.ledger.snapshot(), 0, true)
         }
     };
     let per_tool = totals
@@ -1015,15 +1089,34 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
             cache_hits: entry.cache_hits,
         })
         .collect();
-    let live_balance = if args.live.unwrap_or(false) {
-        ctx.client.live_balance().await
+    let (live_balance, live_balance_error) = if args.live.unwrap_or(false) {
+        match ctx.client.account_probe().await {
+            None => (
+                None,
+                Some("not read: no API key is attached to this client".to_owned()),
+            ),
+            Some((_, Some(credits))) => (Some(credits), None),
+            Some((status, None)) if !(200..300).contains(&status) => (
+                None,
+                Some(format!("not read: the account probe answered {status}")),
+            ),
+            Some((_, None)) => (
+                None,
+                Some("not read: the account probe carried no credit balance".to_owned()),
+            ),
+        }
     } else {
-        None
+        (None, None)
     };
-    let budget_remaining = ctx
-        .settings
-        .session_budget_credits()
-        .map(|budget| budget.saturating_sub(totals.credits.saturating_add(pending)));
+    let budget_remaining = ctx.settings.session_budget_credits().map(|budget| {
+        budget.saturating_sub(
+            totals
+                .credits
+                .saturating_add(pending)
+                .saturating_add(ctx.ledger.queued_credits()),
+        )
+    });
+    let lost = ctx.ledger.lost();
     let output = SessionOutput {
         calls: totals.calls,
         credits: totals.credits,
@@ -1039,9 +1132,16 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
         budget_credits: ctx.settings.session_budget_credits(),
         budget_remaining,
         live_balance,
+        live_balance_error,
+        ledger: Some(crate::response::LedgerHealth {
+            healthy: ctx.ledger.healthy(),
+            queued: ctx.ledger.queued(),
+            lost,
+            credits_stale: stale,
+        }),
     };
     let payload = serde_json::to_value(&output)?;
-    let text = format!(
+    let mut text = format!(
         "{} calls; {} credits ({}); {} tokens, {} saved",
         output.calls,
         output.credits,
@@ -1049,6 +1149,12 @@ async fn session_totals(ctx: &ToolContext, args: SessionArgs) -> Result<CallTool
         output.tokens,
         output.tokens_saved
     );
+    if stale {
+        text.push_str("; the ledger totals are the last known snapshot");
+    }
+    if lost > 0 {
+        text.push_str(&format!("; {lost} earlier calls could not be recorded"));
+    }
     Ok(tool_result(payload, text))
 }
 
@@ -1193,6 +1299,18 @@ fn tool_result(structured: Value, text: String) -> CallToolResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_summary_reads_the_delivered_envelope() {
+        let envelope = serde_json::json!({
+            "results": [{"title": "first"}, {"title": "second"}],
+        });
+        assert_eq!(result_count(&envelope), 2);
+        assert_eq!(first_title(&envelope).as_deref(), Some("first"));
+        let trimmed = serde_json::json!({"results": [], "truncated": true});
+        assert_eq!(result_count(&trimmed), 0);
+        assert_eq!(first_title(&trimmed), None);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn a_held_ledger_lock_does_not_stall_the_async_thread() {

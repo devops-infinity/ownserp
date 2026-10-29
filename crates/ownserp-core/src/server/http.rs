@@ -7,7 +7,7 @@ use std::task::{Context, Poll};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use axum::Json;
-use axum::extract::{ConnectInfo, DefaultBodyLimit, Request, State};
+use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{
     HeaderValue, StatusCode,
     header::{AUTHORIZATION, RETRY_AFTER},
@@ -57,10 +57,23 @@ struct HttpState {
     failed_auth: Arc<FailedAuthLimiter>,
     gate: Arc<Semaphore>,
     request_seq: Arc<AtomicU64>,
-    ready: bool,
-    ready_message: Arc<str>,
+    not_ready: Option<Arc<serde_json::Value>>,
     allowed_hosts: Arc<Vec<String>>,
     request_deadline: Duration,
+}
+
+fn refusal(
+    status: StatusCode,
+    error: crate::error::Error,
+    retry_after: Option<&'static str>,
+) -> Response {
+    let mut response = (status, Json(error.to_json())).into_response();
+    if let Some(value) = retry_after
+        && let Ok(value) = HeaderValue::from_str(value)
+    {
+        response.headers_mut().insert(RETRY_AFTER, value);
+    }
+    response
 }
 
 pub async fn serve_http(settings: Settings) -> Result<()> {
@@ -76,14 +89,14 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
     let failed_auth = Arc::new(RateLimiter::keyed(Quota::per_second(
         NonZeroU32::new(FAILED_AUTH_PER_SECOND).unwrap_or(NonZeroU32::MIN),
     )));
-    let (ready, ready_message): (bool, Arc<str>) = if settings.api_key().is_some() {
-        (true, Arc::from("ready"))
-    } else {
-        (
-            false,
-            Arc::from("no Serper API key; search tools will refuse until one is set"),
+    let not_ready = settings.api_key().is_none().then(|| {
+        Arc::new(
+            Error::MissingApiKey {
+                cause: settings.api_key_error().map(str::to_owned),
+            }
+            .to_json(),
         )
-    };
+    });
     let allowed_hosts = allowed_hosts(&bind, settings.allowed_hosts());
     let request_deadline = call_deadline(settings.request_timeout_secs());
     let handler = OwnserpHandler::with_deadline(settings, Some(request_deadline))?;
@@ -106,8 +119,7 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         failed_auth,
         gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
         request_seq: Arc::new(AtomicU64::new(0)),
-        ready,
-        ready_message,
+        not_ready,
         allowed_hosts: Arc::new(allowed_hosts.clone()),
         request_deadline,
     };
@@ -115,7 +127,6 @@ pub async fn serve_http(settings: Settings) -> Result<()> {
         .route("/readyz", get(readyz))
         .route("/metrics", get(metrics_handler))
         .fallback_service(service)
-        .layer(DefaultBodyLimit::max(MAX_BODY_BYTES))
         .layer(middleware::from_fn_with_state(state.clone(), gate_requests))
         .layer(middleware::from_fn_with_state(
             state.clone(),
@@ -220,8 +231,7 @@ struct LimitedListener {
 struct LimitedStream {
     inner: TcpStream,
     _permit: OwnedSemaphorePermit,
-    header_deadline: std::time::Instant,
-    started: bool,
+    last_activity: std::time::Instant,
 }
 
 impl Listener for LimitedListener {
@@ -243,9 +253,7 @@ impl Listener for LimitedListener {
                         LimitedStream {
                             inner: stream,
                             _permit: permit,
-                            header_deadline: std::time::Instant::now()
-                                + std::time::Duration::from_secs(HEADER_READ_SECS),
-                            started: false,
+                            last_activity: std::time::Instant::now(),
                         },
                         address,
                     );
@@ -270,23 +278,22 @@ impl AsyncRead for LimitedStream {
         buffer: &mut ReadBuf<'_>,
     ) -> Poll<std::io::Result<()>> {
         let this = self.get_mut();
-        if this.started {
-            return Pin::new(&mut this.inner).poll_read(context, buffer);
-        }
         match Pin::new(&mut this.inner).poll_read(context, buffer) {
             Poll::Ready(Ok(())) => {
-                this.started = true;
+                this.last_activity = std::time::Instant::now();
                 Poll::Ready(Ok(()))
             }
             Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
             Poll::Pending => {
+                let idle_until =
+                    this.last_activity + std::time::Duration::from_secs(HEADER_READ_SECS);
                 let mut deadline = Box::pin(tokio::time::sleep_until(
-                    tokio::time::Instant::from_std(this.header_deadline),
+                    tokio::time::Instant::from_std(idle_until),
                 ));
                 match deadline.as_mut().poll(context) {
                     Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(
                         std::io::ErrorKind::TimedOut,
-                        "the request header did not arrive in time",
+                        "the connection sent nothing for too long",
                     ))),
                     Poll::Pending => Poll::Pending,
                 }
@@ -343,14 +350,11 @@ async fn healthz() -> impl IntoResponse {
 }
 
 async fn readyz(State(state): State<HttpState>) -> impl IntoResponse {
-    if state.ready {
-        (StatusCode::OK, "ready").into_response()
-    } else {
-        (
-            StatusCode::SERVICE_UNAVAILABLE,
-            state.ready_message.to_string(),
-        )
-            .into_response()
+    match &state.not_ready {
+        None => (StatusCode::OK, "ready").into_response(),
+        Some(body) => {
+            (StatusCode::SERVICE_UNAVAILABLE, Json(body.as_ref().clone())).into_response()
+        }
     }
 }
 
@@ -369,26 +373,37 @@ async fn metrics_handler(State(state): State<HttpState>) -> impl IntoResponse {
 
 async fn reject_origin(request: Request, next: Next) -> Response {
     if request.headers().contains_key(axum::http::header::ORIGIN) {
-        return (StatusCode::FORBIDDEN, "origin not allowed").into_response();
+        return refusal(
+            StatusCode::FORBIDDEN,
+            Error::Refused {
+                code: "serper.origin_refused",
+                message: "this server refuses requests that carry an Origin header".to_owned(),
+                remedy: "Connect over stdio, or call the server from a non-browser client that sends no Origin header.",
+            },
+            None,
+        );
     }
     next.run(request).await
 }
 
 async fn gate_requests(State(state): State<HttpState>, request: Request, next: Next) -> Response {
     let Ok(_permit) = state.gate.clone().try_acquire_owned() else {
-        return (
+        return refusal(
             StatusCode::SERVICE_UNAVAILABLE,
-            [(RETRY_AFTER, "1")],
-            "server busy",
-        )
-            .into_response();
+            Error::Refused {
+                code: "serper.busy",
+                message: format!("{MAX_CONCURRENT_REQUESTS} requests are already in flight"),
+                remedy: "Retry after one second.",
+            },
+            Some("1"),
+        );
     };
     let backstop = state
         .request_deadline
         .saturating_add(Duration::from_secs(SHUTDOWN_GRACE_SECS));
     match tokio::time::timeout(backstop, next.run(request)).await {
         Ok(response) => response,
-        Err(_) => (StatusCode::GATEWAY_TIMEOUT, "request deadline passed").into_response(),
+        Err(_) => refusal(StatusCode::GATEWAY_TIMEOUT, Error::DeadlineExceeded, None),
     }
 }
 
@@ -446,7 +461,15 @@ async fn require_host(State(state): State<HttpState>, request: Request, next: Ne
     if accepted {
         next.run(request).await
     } else {
-        (StatusCode::FORBIDDEN, "host not allowed").into_response()
+        refusal(
+            StatusCode::FORBIDDEN,
+            Error::Refused {
+                code: "serper.host_refused",
+                message: "the Host header is not in this server's allowed list".to_owned(),
+                remedy: "The operator must add this Host to OWN_SERPER_ALLOWED_HOSTS or the profile's allowed_hosts and restart the server.",
+            },
+            None,
+        )
     }
 }
 
@@ -466,7 +489,7 @@ fn parse_host(value: &str) -> Option<HostIdentity> {
         .strip_prefix('[')
         .and_then(|rest| rest.strip_suffix(']'))
         .unwrap_or(raw);
-    let host = host.strip_suffix('.').unwrap_or(host).to_ascii_lowercase();
+    let host = host.to_ascii_lowercase();
     if host.is_empty() {
         return None;
     }
@@ -503,19 +526,30 @@ async fn require_bearer(State(state): State<HttpState>, request: Request, next: 
         .map(|info| info.0)
         && state.failed_auth.check_key(&peer).is_err()
     {
-        return (
+        return refusal(
             StatusCode::TOO_MANY_REQUESTS,
-            [(RETRY_AFTER, "1")],
-            "rate limited",
-        )
-            .into_response();
+            Error::Refused {
+                code: "serper.auth_rate_limited",
+                message: "too many failed authentication attempts from this address".to_owned(),
+                remedy: "Wait one second, then send the bearer token from OWN_SERPER_BEARER_TOKENS.",
+            },
+            Some("1"),
+        );
     }
-    (
+    let mut response = refusal(
         StatusCode::UNAUTHORIZED,
-        [(axum::http::header::WWW_AUTHENTICATE, "Bearer")],
-        "unauthorized",
-    )
-        .into_response()
+        Error::Refused {
+            code: "serper.unauthorized",
+            message: "the bearer token is missing or wrong".to_owned(),
+            remedy: "Send the bearer token from OWN_SERPER_BEARER_TOKENS as an Authorization: Bearer header.",
+        },
+        None,
+    );
+    response.headers_mut().insert(
+        axum::http::header::WWW_AUTHENTICATE,
+        HeaderValue::from_static("Bearer"),
+    );
+    response
 }
 
 fn bearer_token(request: &Request) -> Option<&str> {
@@ -632,7 +666,7 @@ fn unspecified_bind(bind: &str) -> bool {
         .is_ok_and(|address| address.is_unspecified())
 }
 
-fn call_deadline(request_timeout_secs: u64) -> Duration {
+pub(super) fn call_deadline(request_timeout_secs: u64) -> Duration {
     // The client makes three attempts with 250 ms and 500 ms backoff.
     Duration::from_millis(
         request_timeout_secs
@@ -663,8 +697,7 @@ mod tests {
             ))),
             gate: Arc::new(Semaphore::new(MAX_CONCURRENT_REQUESTS)),
             request_seq: Arc::new(AtomicU64::new(0)),
-            ready: true,
-            ready_message: Arc::from("ready"),
+            not_ready: None,
             allowed_hosts: Arc::new(vec!["localhost".to_owned()]),
             request_deadline: Duration::from_secs(30),
         }
@@ -854,9 +887,13 @@ mod tests {
     }
 
     #[test]
-    fn host_matching_ignores_case_and_one_trailing_dot() {
+    fn host_matching_ignores_case_and_refuses_a_trailing_dot() {
         let allowed = parse_host("example.com").expect("allowed");
         assert!(host_matches(
+            &parse_host("Example.COM").expect("host"),
+            &allowed
+        ));
+        assert!(!host_matches(
             &parse_host("Example.COM.").expect("host"),
             &allowed
         ));
@@ -950,6 +987,31 @@ mod tests {
     #[test]
     fn a_slow_request_timeout_is_not_cut_at_the_old_120_second_deadline() {
         assert!(call_deadline(300) > Duration::from_secs(120));
+    }
+
+    #[tokio::test]
+    async fn a_transport_refusal_carries_the_error_contract() {
+        let response = refusal(
+            StatusCode::FORBIDDEN,
+            Error::Refused {
+                code: "serper.origin_refused",
+                message: "no origin".to_owned(),
+                remedy: "Connect over stdio.",
+            },
+            Some("1"),
+        );
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert_eq!(
+            response.headers().get(RETRY_AFTER),
+            Some(&HeaderValue::from_static("1"))
+        );
+        let body = axum::body::to_bytes(response.into_body(), 4096)
+            .await
+            .expect("body");
+        let value: serde_json::Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(value["code"], "serper.origin_refused");
+        assert_eq!(value["message"], "no origin");
+        assert_eq!(value["remedy"], "Connect over stdio.");
     }
 
     #[test]

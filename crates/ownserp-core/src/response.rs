@@ -450,6 +450,19 @@ pub struct SessionOutput {
     pub budget_remaining: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_balance: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_balance_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ledger: Option<LedgerHealth>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerHealth {
+    pub healthy: bool,
+    pub queued: u64,
+    pub lost: u64,
+    pub credits_stale: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

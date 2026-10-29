@@ -550,7 +550,11 @@ async fn a_disabled_batch_tool_is_refused() {
     )
     .await;
     let value = result_json(&result);
-    assert_eq!(error_code(&value), Some("serper.tool_not_found"));
+    assert_eq!(error_code(&value), Some("serper.tool_disabled"));
+    assert!(
+        value.to_string().contains("enable_batch"),
+        "the refusal must name the switch: {value}"
+    );
 }
 
 #[tokio::test]
@@ -738,7 +742,7 @@ async fn a_scrape_without_a_reported_price_books_the_maximum_estimate() {
 }
 
 #[tokio::test]
-async fn an_exhausted_balance_reports_a_rate_limit() {
+async fn an_exhausted_balance_reports_its_own_code_and_top_up_remedy() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))
         .and(path("/search"))
@@ -755,10 +759,15 @@ async fn an_exhausted_balance_reports_a_rate_limit() {
         &CancellationToken::new(),
     )
     .await;
+    let body = result_json(&failed);
     assert_eq!(
-        error_code(&result_json(&failed)),
-        Some("serper.rate_limited"),
-        "an exhausted balance must not read as a plain upstream failure"
+        error_code(&body),
+        Some("serper.credits_exhausted"),
+        "an exhausted balance must not read as a rate limit"
+    );
+    assert!(
+        body.to_string().contains("serper.dev/dashboard"),
+        "the remedy must name the top-up step: {body}"
     );
 }
 
@@ -1313,4 +1322,145 @@ async fn reported_credits_replace_the_estimate() {
         ledger.contains("\"credits_actual\":3"),
         "ledger was: {ledger}"
     );
+}
+
+fn keyless_settings(label: &str) -> Settings {
+    let dir = std::env::temp_dir().join(format!("ownserp-keyless-{}-{label}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let profile = dir.join("profile.toml");
+    std::fs::write(&profile, "").expect("profile");
+    Settings::load_with_keychain(
+        Overrides {
+            profile: Some(profile),
+            ledger_dir: Some(dir),
+            cache_ttl_secs: Some(0),
+            ..Overrides::default()
+        },
+        |_| None,
+        || Ok(None),
+    )
+    .expect("settings load")
+}
+
+#[tokio::test]
+async fn a_paid_call_without_a_key_is_refused_locally_with_the_local_remedy() {
+    let ctx = ToolContext::new(keyless_settings("paid")).expect("context");
+    let failed = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&arguments(json!({"q": "x"}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    let body = result_json(&failed);
+    assert_eq!(
+        error_code(&body),
+        Some("serper.auth_missing"),
+        "a missing key must be caught before the network call: {body}"
+    );
+    assert!(
+        body.to_string().contains("config set-api-key"),
+        "the remedy must name the local fix: {body}"
+    );
+}
+
+#[tokio::test]
+async fn a_free_tool_still_answers_when_no_key_is_set() {
+    let ctx = ToolContext::new(keyless_settings("free")).expect("context");
+    let answered = call_tool(&ctx, "serper_session", None, &CancellationToken::new()).await;
+    assert_eq!(
+        result_json(&answered)
+            .get("isError")
+            .and_then(Value::as_bool),
+        Some(false),
+        "a free tool must not be refused for a missing key"
+    );
+}
+
+#[tokio::test]
+async fn a_disabled_batch_tool_names_the_switch_that_enables_it() {
+    let server = MockServer::start().await;
+    let ctx = context_with("batch-hidden", &server.uri(), 0, false);
+    let failed = call_tool(
+        &ctx,
+        "serper_search_batch",
+        Some(&arguments(json!({"queries": [{"q": "x"}]}))),
+        &CancellationToken::new(),
+    )
+    .await;
+    let body = result_json(&failed);
+    assert_eq!(error_code(&body), Some("serper.tool_disabled"));
+    assert!(
+        body.to_string().contains("enable_batch"),
+        "the refusal must name the switch: {body}"
+    );
+}
+
+#[test]
+fn every_error_variant_carries_a_code_a_message_and_a_remedy() {
+    let json_error = serde_json::from_str::<Value>("{").expect_err("invalid json");
+    let errors = vec![
+        ownserp_core::Error::MissingApiKey { cause: None },
+        ownserp_core::Error::MissingApiKey {
+            cause: Some("no session bus".to_owned()),
+        },
+        ownserp_core::Error::InvalidArgs("q".to_owned()),
+        ownserp_core::Error::Upstream {
+            status: 500,
+            message: "down".to_owned(),
+        },
+        ownserp_core::Error::RateLimited {
+            message: "slow down".to_owned(),
+        },
+        ownserp_core::Error::CreditsExhausted {
+            message: "empty".to_owned(),
+        },
+        ownserp_core::Error::BudgetRefused("10 credits".to_owned()),
+        ownserp_core::Error::network("calling Serper", std::io::Error::other("reset")),
+        ownserp_core::Error::Config("bad value".to_owned()),
+        ownserp_core::Error::keychain("reading the key", std::io::Error::other("denied")),
+        ownserp_core::Error::Ledger("broken chain".to_owned()),
+        ownserp_core::Error::LedgerBusy("held".to_owned()),
+        ownserp_core::Error::Io {
+            context: "writing the ledger",
+            source: std::io::Error::other("full"),
+        },
+        ownserp_core::Error::Json {
+            context: "reading a body",
+            source: json_error,
+        },
+        ownserp_core::Error::Projection("bad shape".to_owned()),
+        ownserp_core::Error::UnknownTool {
+            name: "nope".to_owned(),
+        },
+        ownserp_core::Error::ToolDisabled {
+            name: "serper_search_batch".to_owned(),
+            switch: "enable_batch",
+        },
+        ownserp_core::Error::Cancelled,
+        ownserp_core::Error::DeadlineExceeded,
+        ownserp_core::Error::ConnectFailed {
+            message: "unreachable".to_owned(),
+        },
+        ownserp_core::Error::Refused {
+            code: "serper.busy",
+            message: "busy".to_owned(),
+            remedy: "Retry after one second.",
+        },
+    ];
+    for error in errors {
+        let body = error.to_json();
+        let code = body.get("code").and_then(Value::as_str).unwrap_or_default();
+        let message = body
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let remedy = body
+            .get("remedy")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert!(code.starts_with("serper."), "{code} is not a serper code");
+        assert!(!message.is_empty(), "{code} carries no message");
+        assert!(!remedy.is_empty(), "{code} carries no remedy");
+    }
 }

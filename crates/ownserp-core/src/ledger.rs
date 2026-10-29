@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fs::{File, OpenOptions, TryLockError};
-use std::io::{BufReader, Seek, SeekFrom, Write};
+use std::io::{BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -17,6 +17,7 @@ const LOCK_WAIT_STEP: Duration = Duration::from_millis(10);
 const LOCK_WAIT_LIMIT: Duration = Duration::from_secs(5);
 const MAX_RELOADS: u8 = 8;
 const QUEUE_CAPACITY: usize = 256;
+const LEDGER_VERSION: u64 = 1;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ToolTotals {
@@ -68,8 +69,14 @@ pub struct LedgerRow {
     pub tokens: u64,
     pub tokens_saved: u64,
     pub cache_hit: bool,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub v: u64,
     pub prev: String,
     pub hash: String,
+}
+
+const fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 struct Cursor {
@@ -103,6 +110,7 @@ struct LedgerState {
     lock_wait: Duration,
 }
 
+#[derive(Clone)]
 struct Queued {
     record: CallRecord,
     observed_unix: u64,
@@ -127,10 +135,43 @@ impl Drop for Ledger {
         if batch.is_empty() {
             return;
         }
-        if let Ok(mut state) = self.state.lock() {
-            let _ = state.catch_up(true);
-            let _ = state.write_batch(batch);
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        for _ in 0..=MAX_RELOADS {
+            let Ok(handle) = clone_handle(&state.file) else {
+                return;
+            };
+            let Ok(locked) = LockedFile::exclusive(&handle, &state.path, state.lock_wait) else {
+                tracing::warn!(
+                    "queued ledger rows could not be written at shutdown: the ledger stayed locked"
+                );
+                return;
+            };
+            match state.catch_up(true) {
+                Ok(CatchUp::Replaced) => {
+                    drop(locked);
+                    let mut reloads = 0u8;
+                    if state.reload(&mut reloads).is_err() {
+                        return;
+                    }
+                }
+                Ok(CatchUp::Applied) => {
+                    drop(locked);
+                    if let Err(error) = state.write_batch(batch) {
+                        tracing::warn!(%error, "queued ledger rows could not be written at shutdown");
+                    }
+                    return;
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "queued ledger rows could not be written at shutdown");
+                    return;
+                }
+            }
         }
+        tracing::warn!(
+            "queued ledger rows could not be written at shutdown: the ledger kept being replaced"
+        );
     }
 }
 
@@ -184,22 +225,8 @@ impl Ledger {
         ensure_same_file(&path, &file)?;
         let locked = LockedFile::exclusive(&file, &path, lock_wait)?;
         sync_parent_dir(&path);
-        let cursor = load_chain(&file, &path)?;
-        let file_len = file.metadata()?.len();
-        if file_len > cursor.offset {
-            if cursor.offset == 0 {
-                return Err(Error::Ledger(format!(
-                    "{} holds content that is not a ledger; point the ledger at a new file",
-                    file_label(&path)
-                )));
-            }
-            file.set_len(cursor.offset)?;
-            tracing::warn!(
-                path = %path.display(),
-                removed = file_len.saturating_sub(cursor.offset),
-                "truncated a partial final ledger line before appending"
-            );
-        }
+        let mut cursor = load_chain(&file, &path)?;
+        repair_tail(&file, &path, &mut cursor)?;
         lock_down_file(&path, &file)?;
         drop(locked);
         let published = cursor.totals.clone();
@@ -261,12 +288,17 @@ impl Ledger {
                 record,
                 observed_unix: unix_seconds(),
             });
+            let retry = batch.clone();
             let rows = state.write_batch(batch);
-            if rows.is_ok() {
-                self.publish(&state.cursor.totals);
-                if reserved > 0 {
-                    self.settle(reserved);
+            match &rows {
+                Ok(_) => {
+                    self.healthy.store(true, Ordering::Relaxed);
+                    self.publish(&state.cursor.totals);
+                    if reserved > 0 {
+                        self.settle(reserved);
+                    }
                 }
+                Err(_) => self.restore(retry),
             }
             let mut rows = rows?;
             return rows
@@ -358,7 +390,7 @@ impl Ledger {
         queue.drain(..).collect()
     }
 
-    fn queued_credits(&self) -> u64 {
+    pub fn queued_credits(&self) -> u64 {
         let queue = match self.queue.lock() {
             Ok(queue) => queue,
             Err(poisoned) => poisoned.into_inner(),
@@ -423,6 +455,27 @@ impl Ledger {
         Ok(self.pending.load(Ordering::Acquire))
     }
 
+    pub fn healthy(&self) -> bool {
+        self.healthy.load(Ordering::Relaxed)
+    }
+
+    pub fn lost(&self) -> u64 {
+        self.lost.load(Ordering::Relaxed)
+    }
+
+    pub fn queued(&self) -> u64 {
+        self.queue
+            .lock()
+            .map(|queue| queue.len() as u64)
+            .unwrap_or(0)
+    }
+
+    fn restore(&self, batch: Vec<Queued>) {
+        for item in batch {
+            self.enqueue(item.record, item.observed_unix);
+        }
+    }
+
     pub fn path(&self) -> Result<PathBuf> {
         let state = self.lock()?;
         Ok(state.path.clone())
@@ -474,13 +527,8 @@ impl LedgerState {
         })?;
         cursor.offset = valid_end;
         cursor.last_hash = previous;
-        if repair && file_len > valid_end {
-            file.set_len(valid_end)?;
-            tracing::warn!(
-                path = %path.display(),
-                removed = file_len.saturating_sub(valid_end),
-                "truncated a partial final ledger line before appending"
-            );
+        if repair {
+            repair_tail(file, path, cursor)?;
         }
         Ok(CatchUp::Applied)
     }
@@ -503,17 +551,8 @@ impl LedgerState {
         ensure_same_file(&self.path, &file)?;
         let locked = LockedFile::exclusive(&file, &self.path, self.lock_wait)?;
         sync_parent_dir(&self.path);
-        let cursor = load_chain(&file, &self.path)?;
-        let file_len = file.metadata()?.len();
-        if file_len > cursor.offset {
-            if cursor.offset == 0 {
-                return Err(Error::Ledger(format!(
-                    "{} holds content that is not a ledger; point the ledger at a new file",
-                    file_label(&self.path)
-                )));
-            }
-            file.set_len(cursor.offset)?;
-        }
+        let mut cursor = load_chain(&file, &self.path)?;
+        repair_tail(&file, &self.path, &mut cursor)?;
         lock_down_file(&self.path, &file)?;
         drop(locked);
         self.file = file;
@@ -543,6 +582,7 @@ impl LedgerState {
                 tokens: record.tokens,
                 tokens_saved: record.tokens_saved,
                 cache_hit: record.cache_hit,
+                v: LEDGER_VERSION,
                 prev: previous.clone(),
                 hash: String::new(),
             };
@@ -589,6 +629,61 @@ pub fn verify(path: &Path) -> Result<u64> {
 }
 
 pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
+    let file = open_for_rotate(path)?;
+    let _locked = LockedFile::exclusive(&file, path, LOCK_WAIT_LIMIT)?;
+    ensure_same_file(path, &file)?;
+    let rows = count_chain(&file, path)?;
+    let archive = archive_path(path);
+    std::fs::rename(path, &archive)?;
+    sync_parent_dir(path);
+    Ok((rows, archive))
+}
+
+pub fn rotate_damaged(path: &Path) -> Result<(u64, PathBuf)> {
+    let file = open_for_rotate(path)?;
+    let _locked = LockedFile::exclusive(&file, path, LOCK_WAIT_LIMIT)?;
+    ensure_same_file(path, &file)?;
+    let rows = valid_prefix(&file, path)?;
+    let archive = archive_path(path);
+    std::fs::rename(path, &archive)?;
+    sync_parent_dir(path);
+    Ok((rows, archive))
+}
+
+pub fn remove(ledger_dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut removed = Vec::new();
+    let mut candidates = archive_files(ledger_dir)?;
+    candidates.push(ledger_dir.join("calls.jsonl"));
+    candidates.push(ledger_dir.parent().unwrap_or(ledger_dir).join("args.key"));
+    for path in candidates {
+        if path.exists() {
+            std::fs::remove_file(&path)?;
+            removed.push(path);
+        }
+    }
+    Ok(removed)
+}
+
+fn archive_files(ledger_dir: &Path) -> Result<Vec<PathBuf>> {
+    let Ok(entries) = std::fs::read_dir(ledger_dir) else {
+        return Ok(Vec::new());
+    };
+    let mut archives = Vec::new();
+    for entry in entries {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with("calls-") && name.ends_with(".jsonl") {
+            archives.push(entry.path());
+        }
+    }
+    archives.sort();
+    Ok(archives)
+}
+
+fn open_for_rotate(path: &Path) -> Result<File> {
     if !path.exists() {
         return Err(Error::Ledger(format!(
             "no ledger at {} to rotate",
@@ -598,9 +693,10 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
     ensure_regular_file(path)?;
     let file = OpenOptions::new().read(true).append(true).open(path)?;
     ensure_same_file(path, &file)?;
-    let _locked = LockedFile::exclusive(&file, path, LOCK_WAIT_LIMIT)?;
-    ensure_same_file(path, &file)?;
-    let rows = count_chain(&file, path)?;
+    Ok(file)
+}
+
+fn archive_path(path: &Path) -> PathBuf {
     let stamp = unix_seconds();
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let stem = path
@@ -613,9 +709,45 @@ pub fn rotate(path: &Path) -> Result<(u64, PathBuf)> {
         archive = parent.join(format!("{stem}-{stamp}-{counter}.jsonl"));
         counter = counter.saturating_add(1);
     }
-    std::fs::rename(path, &archive)?;
-    sync_parent_dir(path);
-    Ok((rows, archive))
+    archive
+}
+
+fn valid_prefix(file: &File, _path: &Path) -> Result<u64> {
+    let mut reader = BufReader::new(file);
+    let mut previous = String::from(GENESIS);
+    let mut expected = 1u64;
+    let mut valid = 0u64;
+    let mut buffer = Vec::new();
+    loop {
+        buffer.clear();
+        let Some(line) = read_line_capped(&mut reader)? else {
+            break;
+        };
+        if line.is_empty() {
+            break;
+        }
+        buffer.extend_from_slice(&line);
+        let terminated = buffer.last() == Some(&b'\n');
+        let body = buffer.strip_suffix(b"\n").unwrap_or(buffer.as_slice());
+        let text = String::from_utf8_lossy(body);
+        if text.trim().is_empty() {
+            continue;
+        }
+        let Ok(row) = serde_json::from_str::<LedgerRow>(&text) else {
+            break;
+        };
+        if !terminated
+            || row.seq != expected
+            || row.prev != previous
+            || row.hash != chain_hash(&previous, &row)
+        {
+            break;
+        }
+        expected = expected.saturating_add(1);
+        previous = row.hash.clone();
+        valid = valid.saturating_add(1);
+    }
+    Ok(valid)
 }
 
 fn read_line_capped<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<Vec<u8>>> {
@@ -743,11 +875,13 @@ where
         }
         match serde_json::from_str::<LedgerRow>(&text) {
             Ok(row) if terminated => {
+                check_version(&row, path)?;
                 visit(&row)?;
                 rows = rows.saturating_add(1);
                 valid_len = consumed;
             }
-            Ok(_) => {
+            Ok(row) => {
+                check_version(&row, path)?;
                 if strict {
                     return Err(Error::Ledger(format!(
                         "{} ends with an unterminated line",
@@ -780,6 +914,79 @@ where
         }
     }
     Ok((rows, valid_len))
+}
+
+fn check_version(row: &LedgerRow, path: &Path) -> Result<()> {
+    if row.v > LEDGER_VERSION {
+        return Err(Error::Ledger(format!(
+            "{} is ledger format version {}, newer than this binary supports ({LEDGER_VERSION}); upgrade ownserp to read it",
+            file_label(path),
+            row.v
+        )));
+    }
+    Ok(())
+}
+
+fn repair_tail(file: &File, path: &Path, cursor: &mut Cursor) -> Result<()> {
+    let file_len = file.metadata()?.len();
+    if file_len <= cursor.offset {
+        return Ok(());
+    }
+    if cursor.offset == 0 {
+        return Err(Error::Ledger(format!(
+            "{} holds content that is not a ledger; point the ledger at a new file",
+            file_label(path)
+        )));
+    }
+    let offset = cursor.offset;
+    if let Some(end) = salvage_tail(file, path, offset, cursor)? {
+        tracing::warn!(
+            path = %path.display(),
+            "kept a complete final ledger row that only lacked its newline"
+        );
+        cursor.offset = end;
+        return Ok(());
+    }
+    file.set_len(offset)?;
+    tracing::warn!(
+        path = %path.display(),
+        removed = file_len.saturating_sub(offset),
+        "truncated a partial final ledger line before appending"
+    );
+    Ok(())
+}
+
+fn salvage_tail(file: &File, path: &Path, offset: u64, cursor: &mut Cursor) -> Result<Option<u64>> {
+    let mut handle = file.try_clone()?;
+    handle.seek(SeekFrom::Start(offset))?;
+    let mut tail = Vec::new();
+    handle
+        .take(MAX_LINE_BYTES.saturating_add(1) as u64)
+        .read_to_end(&mut tail)?;
+    if tail.is_empty() || tail.len() > MAX_LINE_BYTES || tail.last() == Some(&b'\n') {
+        return Ok(None);
+    }
+    let text = String::from_utf8_lossy(&tail);
+    let Ok(row) = serde_json::from_str::<LedgerRow>(&text) else {
+        return Ok(None);
+    };
+    check_version(&row, path)?;
+    if row.seq != cursor.seq.saturating_add(1)
+        || row.prev != cursor.last_hash
+        || row.hash != chain_hash(&cursor.last_hash, &row)
+    {
+        return Ok(None);
+    }
+    let mut writer = file;
+    writer.seek(SeekFrom::End(0))?;
+    writer.write_all(b"\n")?;
+    writer.sync_data()?;
+    cursor.seq = row.seq;
+    accumulate(&mut cursor.totals, &row);
+    cursor.last_hash = row.hash;
+    Ok(Some(
+        offset.saturating_add(tail.len() as u64).saturating_add(1),
+    ))
 }
 
 fn sync_parent_dir(path: &Path) {
@@ -998,7 +1205,7 @@ fn accumulate(totals: &mut Totals, row: &LedgerRow) {
 }
 
 fn chain_hash(prev: &str, row: &LedgerRow) -> String {
-    let payload = format!(
+    let mut payload = format!(
         "{prev}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}\u{1f}{}",
         row.seq,
         row.ts_unix,
@@ -1016,6 +1223,10 @@ fn chain_hash(prev: &str, row: &LedgerRow) -> String {
         row.tokens_saved,
         row.cache_hit,
     );
+    if row.v != 0 {
+        payload.push('\u{1f}');
+        payload.push_str(&row.v.to_string());
+    }
     let mut hasher = Sha256::new();
     hasher.update(payload.as_bytes());
     hex::encode(hasher.finalize())
@@ -1080,6 +1291,29 @@ mod tests {
         assert_eq!(second.totals().expect("totals").calls, 0);
         drop((first, second));
         clean(&path);
+    }
+
+    #[test]
+    fn rotating_a_damaged_ledger_counts_the_good_prefix_and_archives_it() {
+        let path = temp_path("rotate-damaged");
+        let _ = std::fs::remove_file(&path);
+        {
+            let ledger = Ledger::open(&path).expect("ledger");
+            ledger.append(record()).expect("first row");
+            ledger.append(record()).expect("second row");
+        }
+        let mut file = OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .expect("open for damage");
+        writeln!(file, "{{not a ledger row").expect("plant a damaged line");
+        file.sync_all().expect("sync");
+        let (rows, archive) = rotate_damaged(&path).expect("archive the damaged ledger");
+        assert_eq!(rows, 2, "both good rows must be counted");
+        assert!(!path.exists(), "the live path must move to the archive");
+        assert!(archive.exists(), "the archive must exist");
+        clean(&path);
+        let _ = std::fs::remove_file(&archive);
     }
 
     #[test]
@@ -1516,6 +1750,7 @@ mod tests {
                 tokens: 0,
                 tokens_saved: 0,
                 cache_hit: false,
+                v: 0,
                 prev: previous.clone(),
                 hash: String::new(),
             };
@@ -1741,7 +1976,7 @@ mod tests {
     }
 
     #[test]
-    fn an_unterminated_valid_final_row_is_not_chained() {
+    fn an_unterminated_valid_final_row_is_kept_and_terminated() {
         let path = temp_path("unterminated");
         let _ = std::fs::remove_file(&path);
         {
@@ -1754,11 +1989,112 @@ mod tests {
         std::fs::write(&path, trimmed).expect("drop the final newline");
 
         let ledger = Ledger::open(&path).expect("reopen past an unterminated row");
-        assert_eq!(ledger.totals().expect("totals").calls, 1);
+        assert_eq!(
+            ledger.totals().expect("totals").calls,
+            2,
+            "a row that hashes correctly must be kept, not dropped"
+        );
         ledger.append(record()).expect("append after repair");
         drop(ledger);
 
-        assert_eq!(verify(&path).expect("chain still valid"), 2);
+        let repaired = std::fs::read(&path).expect("read back");
+        assert!(
+            repaired.ends_with(b"\n"),
+            "the kept row must end in a newline"
+        );
+        assert_eq!(verify(&path).expect("chain still valid"), 3);
+        clean(&path);
+    }
+
+    #[test]
+    fn a_ledger_row_without_a_version_hashes_exactly_as_before() {
+        let mut row = LedgerRow {
+            seq: 1,
+            ts_unix: 1_700_000_000,
+            tool: "serper_search".to_owned(),
+            endpoint: "/search".to_owned(),
+            args_hash: "a".repeat(64),
+            credits_estimated: 1,
+            credits_actual: None,
+            batch_multiplier: 1,
+            duration_ms: 2,
+            status: "ok".to_owned(),
+            response_bytes: 3,
+            tokens: 4,
+            tokens_saved: 5,
+            cache_hit: false,
+            v: 0,
+            prev: GENESIS.to_owned(),
+            hash: String::new(),
+        };
+        let legacy_payload = [
+            GENESIS.to_owned(),
+            row.seq.to_string(),
+            row.ts_unix.to_string(),
+            row.tool.clone(),
+            row.endpoint.clone(),
+            row.args_hash.clone(),
+            row.credits_estimated.to_string(),
+            "-".to_owned(),
+            row.batch_multiplier.to_string(),
+            row.duration_ms.to_string(),
+            row.status.clone(),
+            row.response_bytes.to_string(),
+            row.tokens.to_string(),
+            row.tokens_saved.to_string(),
+            row.cache_hit.to_string(),
+        ]
+        .join("\u{1f}");
+        let mut hasher = Sha256::new();
+        hasher.update(legacy_payload.as_bytes());
+        let legacy_hash = hex::encode(hasher.finalize());
+        assert_eq!(
+            chain_hash(GENESIS, &row),
+            legacy_hash,
+            "a row from before the version field must keep its hash"
+        );
+        row.v = 1;
+        assert_ne!(
+            chain_hash(GENESIS, &row),
+            legacy_hash,
+            "a versioned row must cover its version"
+        );
+    }
+
+    #[test]
+    fn a_newer_ledger_version_is_refused_by_name() {
+        let path = temp_path("newer-version");
+        let _ = std::fs::remove_file(&path);
+        let mut row = LedgerRow {
+            seq: 1,
+            ts_unix: 1,
+            tool: "serper_search".to_owned(),
+            endpoint: "/search".to_owned(),
+            args_hash: "0".repeat(64),
+            credits_estimated: 1,
+            credits_actual: None,
+            batch_multiplier: 1,
+            duration_ms: 1,
+            status: "ok".to_owned(),
+            response_bytes: 0,
+            tokens: 0,
+            tokens_saved: 0,
+            cache_hit: false,
+            v: 2,
+            prev: GENESIS.to_owned(),
+            hash: String::new(),
+        };
+        row.hash = chain_hash(GENESIS, &row);
+        let line = serde_json::to_string(&row).expect("json row");
+        std::fs::write(&path, format!("{line}\n")).expect("write the row");
+        let error = match Ledger::open(&path) {
+            Ok(_) => panic!("a newer version must be refused"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("version 2"),
+            "the refusal must name the version: {error}"
+        );
         clean(&path);
     }
 

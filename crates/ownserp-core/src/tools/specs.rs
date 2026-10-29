@@ -114,8 +114,17 @@ pub const SPECS: &[ToolSpec] = &[
     },
 ];
 
+pub(crate) fn switch(spec: &ToolSpec) -> Option<&'static str> {
+    (spec.name == "serper_search_batch").then_some("enable_batch")
+}
+
 pub(crate) fn enabled(spec: &ToolSpec, settings: &Settings) -> bool {
-    spec.name != "serper_search_batch" || settings.enable_batch()
+    switch(spec).is_none_or(|_| settings.enable_batch())
+}
+
+pub(crate) fn free(spec: &ToolSpec) -> bool {
+    spec.endpoint
+        .is_none_or(|endpoint| endpoint.base_cost().get() == 0)
 }
 
 pub(crate) fn enabled_specs(settings: &Settings) -> Vec<&'static ToolSpec> {

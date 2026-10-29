@@ -77,7 +77,18 @@ run_check "doc tests" "doc tests failed" cargo test --workspace --all-features -
 run_check "docs" "the docs do not build" env RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps --locked
 run_check "advisories" "a dependency advisory is open; see deny.toml" cargo audit --deny warnings --ignore RUSTSEC-2026-0370 --ignore RUSTSEC-2026-0371 --ignore RUSTSEC-2026-0372
 run_check "policy" "cargo deny failed" cargo deny check
+run_check "suppression dates" "a deny.toml suppression is past its recheck date" python3 tools/check-suppressions.py
 run_check "unused dependencies" "remove the dependency machete reports" cargo machete
+VERSION="$(workspace_version "$REPO")"
+manifest_check() {
+	local file="$1"
+	[[ -f "$file" ]] || die "$file is missing"
+	grep -q "\"version\": \"$VERSION\"" "$file" || die "$file does not name version $VERSION"
+}
+STEP="manifest versions"
+manifest_check server.json
+manifest_check mcpb/manifest.json
+log_line SUCCESS "manifest versions"
 if command -v cargo-llvm-cov >/dev/null 2>&1; then
 	run_check "coverage" "line coverage is below the 80 percent floor; add a test for the changed code" cargo llvm-cov --workspace --all-features --fail-under-lines 80 --summary-only
 else
