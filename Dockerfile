@@ -15,7 +15,7 @@ FROM debian:trixie-slim@sha256:62bd423aeee912639ca8ee681c2b762cb3e25137e0a92b20b
 LABEL org.opencontainers.image.title="OwnSERP" \
       org.opencontainers.image.description="OwnSERP, an MCP server for the Serper.dev search API" \
       org.opencontainers.image.source="https://github.com/devops-infinity/ownserp" \
-      org.opencontainers.image.version="2.0.0" \
+      org.opencontainers.image.version="2.1.0" \
       org.opencontainers.image.licenses="MIT OR Apache-2.0"
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \

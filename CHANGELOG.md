@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-30
+
 ### Added
 
 - `ownserp update` reports the latest release and the upgrade command for this install channel, and `--json` gives the same answer for scripts.
@@ -320,3 +322,5 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 [0.1.0]: https://github.com/devops-infinity/ownserp/releases/tag/v0.1.0
 
 [2.0.0]: https://github.com/devops-infinity/ownserp/compare/v1.3.1...v2.0.0
+
+[2.1.0]: https://github.com/devops-infinity/ownserp/compare/v2.0.0...v2.1.0
