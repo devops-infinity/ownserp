@@ -176,8 +176,18 @@ impl ServerHandler for OwnserpHandler {
     ) -> std::result::Result<CallToolResponse, McpError> {
         let name = request.name.as_ref();
         if !self.tools.iter().any(|tool| tool.name == name) {
-            let error = crate::error::Error::UnknownTool {
-                name: sanitize_tool_name(name),
+            let error = match tools::specs::SPECS
+                .iter()
+                .find(|spec| spec.name == name)
+                .and_then(tools::specs::switch)
+            {
+                Some(switch) => crate::error::Error::ToolDisabled {
+                    name: sanitize_tool_name(name),
+                    switch,
+                },
+                None => crate::error::Error::UnknownTool {
+                    name: sanitize_tool_name(name),
+                },
             };
             return Ok(rmcp::model::CallToolResult::structured_error(error.to_json()).into());
         }
@@ -216,24 +226,25 @@ where
             None => std::future::pending::<()>().await,
         }
     };
-    tokio::select! {
+    let fallback = tokio::select! {
         result = &mut call => return result,
-        () = shutdown.cancelled() => {}
-        () = deadline => {}
-    }
+        () = shutdown.cancelled() => crate::error::Error::Cancelled,
+        () = deadline => crate::error::Error::DeadlineExceeded,
+    };
     cancellation.cancel();
-    cancel_wait(&mut call).await
+    cancel_wait(&mut call, fallback).await
 }
 
-async fn cancel_wait<F>(call: &mut Pin<&mut F>) -> rmcp::model::CallToolResult
+async fn cancel_wait<F>(
+    call: &mut Pin<&mut F>,
+    fallback: crate::error::Error,
+) -> rmcp::model::CallToolResult
 where
     F: Future<Output = rmcp::model::CallToolResult>,
 {
     match tokio::time::timeout(CANCELLED_CALL_GRACE, call.as_mut()).await {
         Ok(result) => result,
-        Err(_) => {
-            rmcp::model::CallToolResult::structured_error(crate::error::Error::Cancelled.to_json())
-        }
+        Err(_) => rmcp::model::CallToolResult::structured_error(fallback.to_json()),
     }
 }
 

@@ -29,6 +29,11 @@ fn set_key() -> anyhow::Result<()> {
     let secret = SecretString::from(trimmed);
     keychain_set(&secret).context("storing the key in the OS keychain")?;
     emit("stored the key in the OS keychain")?;
+    if std::env::var_os("SERPER_API_KEY").is_some_and(|value| !value.is_empty()) {
+        emit(
+            "SERPER_API_KEY is also set and takes precedence over the keychain, so this stored key will not be used until that variable is unset",
+        )?;
+    }
     Ok(())
 }
 

@@ -5,7 +5,15 @@ use crate::cli::DoctorArgs;
 use crate::output::emit;
 
 pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
-    let settings = Settings::load(args.into_overrides()).context("resolving settings")?;
+    let settings = match Settings::load(args.into_overrides()) {
+        Ok(settings) => settings,
+        Err(error) => {
+            emit(&format!("OwnSERP {}", env!("CARGO_PKG_VERSION")))?;
+            emit(&format!("settings could not be resolved: {error}"))?;
+            emit(&format!("fix: {}", error.remedy()))?;
+            bail!("settings could not be resolved; fix the setting named above");
+        }
+    };
     emit(&format!("OwnSERP {}", env!("CARGO_PKG_VERSION")))?;
     emit(&format!(
         "api key source: {}",
@@ -28,6 +36,26 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     ))?;
     emit(&format!("batch tool enabled: {}", settings.enable_batch()))?;
     emit(&format!(
+        "per-call credit ceiling: {}",
+        settings
+            .per_call_credit_ceiling()
+            .map_or_else(|| "unset".to_owned(), |value| value.to_string())
+    ))?;
+    emit(&format!(
+        "session budget credits: {}",
+        settings
+            .session_budget_credits()
+            .map_or_else(|| "unset".to_owned(), |value| value.to_string())
+    ))?;
+    emit(&format!(
+        "request timeout seconds: {}",
+        settings.request_timeout_secs()
+    ))?;
+    emit(&format!(
+        "bearer tokens configured: {}",
+        settings.bearer_tokens().len()
+    ))?;
+    emit(&format!(
         "transport: {}",
         if settings.http() {
             "streamable http"
@@ -35,6 +63,7 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
             "stdio"
         }
     ))?;
+    emit(&format!("bind: {}", settings.bind()))?;
     let hosts = settings.allowed_hosts().map_or_else(
         || "from the bind address".to_owned(),
         |hosts| hosts.join(", "),

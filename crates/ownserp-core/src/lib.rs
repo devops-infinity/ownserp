@@ -19,6 +19,7 @@ mod response;
 mod server;
 mod tools;
 mod types;
+mod update;
 
 pub use cache::ResponseCache;
 pub use client::SerperClient;
@@ -28,16 +29,19 @@ pub use config::{
 };
 pub use cost::{BATCH_MULTIPLIER, Endpoint, Host, usd_for_call, usd_for_credits};
 pub use error::{Error, Result};
-pub use ledger::{CallRecord, Ledger, LedgerRow, Reservation, ToolTotals, Totals, rotate, verify};
+pub use ledger::{
+    CallRecord, Ledger, LedgerRow, Reservation, ToolTotals, Totals, remove, rotate, rotate_damaged,
+    verify,
+};
 pub use projection::{
     MAX_RESULT_BYTES, ScrapeContent, SearchSections, fit_to_budget, sanitize, search_sections,
     summary_text,
 };
 pub use response::{
     AnswerBox, BatchEntry, BatchOutput, CostInfo, Envelope, HealthOutput, ImageItem,
-    KnowledgeGraph, LensItem, ListOutput, LocationItem, NewsItem, OrganicItem, PatentItem,
-    PeopleAlsoAsk, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput, ShoppingItem,
-    Suggestion, ToolUsage, VideoItem,
+    KnowledgeGraph, LedgerHealth, LensItem, ListOutput, LocationItem, NewsItem, OrganicItem,
+    PatentItem, PeopleAlsoAsk, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput,
+    ShoppingItem, Suggestion, ToolUsage, VideoItem,
 };
 pub use secrecy::SecretString;
 pub use server::{Metrics, OwnserpHandler, serve_http, serve_stdio};
@@ -46,6 +50,7 @@ pub use tools::{ToolContext, args, call as call_tool};
 pub use types::{
     ApiKeySource, CreditCost, LocationQuery, MapViewport, PackTier, Preset, TextMode, TimeFilter,
 };
+pub use update::{UpdateStatus, check_for_update};
 
 pub const APP_NAME: &str = "OwnSERP";
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

@@ -8,13 +8,15 @@ pub type Result<T, E = Error> = std::result::Result<T, E>;
 #[non_exhaustive]
 pub enum Error {
     #[error("missing Serper API key")]
-    MissingApiKey,
+    MissingApiKey { cause: Option<String> },
     #[error("invalid arguments: {0}")]
     InvalidArgs(String),
     #[error("upstream returned {status}: {message}")]
     Upstream { status: u16, message: String },
-    #[error("upstream rate limit or exhausted credits: {message}")]
+    #[error("upstream rate limit: {message}")]
     RateLimited { message: String },
+    #[error("Serper credits exhausted: {message}")]
+    CreditsExhausted { message: String },
     #[error("budget refused: {0}")]
     BudgetRefused(String),
     #[error("network failure while {context}")]
@@ -51,10 +53,20 @@ pub enum Error {
     Projection(String),
     #[error("tool {name} is not available in this configuration")]
     UnknownTool { name: String },
-    #[error("request cancelled by the client")]
+    #[error("tool {name} is disabled until {switch} is set")]
+    ToolDisabled { name: String, switch: &'static str },
+    #[error("request cancelled")]
     Cancelled,
+    #[error("the call passed the server's deadline")]
+    DeadlineExceeded,
     #[error("could not reach Serper")]
     ConnectFailed { message: String },
+    #[error("{message}")]
+    Refused {
+        code: &'static str,
+        message: String,
+        remedy: &'static str,
+    },
 }
 
 impl Error {
@@ -74,7 +86,7 @@ impl Error {
 
     pub const fn code(&self) -> &'static str {
         match self {
-            Self::MissingApiKey => "serper.auth_missing",
+            Self::MissingApiKey { .. } => "serper.auth_missing",
             Self::InvalidArgs(_) => "serper.bad_request",
             Self::Upstream { status, .. } => match status {
                 400 | 422 => "serper.bad_request",
@@ -83,15 +95,20 @@ impl Error {
                 _ => "serper.upstream_failed",
             },
             Self::RateLimited { .. } => "serper.rate_limited",
+            Self::CreditsExhausted { .. } => "serper.credits_exhausted",
             Self::BudgetRefused(_) => "serper.budget_refused",
             Self::Network { .. } => "serper.upstream_failed",
             Self::Config(_) => "serper.config_error",
             Self::Keychain { .. } => "serper.keychain_error",
-            Self::Ledger(_) | Self::LedgerBusy(_) | Self::Io { .. } => "serper.internal_error",
+            Self::Ledger(_) | Self::LedgerBusy(_) => "serper.ledger_fault",
+            Self::Io { .. } => "serper.internal_error",
             Self::Json { .. } | Self::Projection(_) => "serper.internal_error",
             Self::UnknownTool { .. } => "serper.tool_not_found",
+            Self::ToolDisabled { .. } => "serper.tool_disabled",
             Self::Cancelled => "serper.cancelled",
+            Self::DeadlineExceeded => "serper.deadline_exceeded",
             Self::ConnectFailed { .. } => "serper.upstream_failed",
+            Self::Refused { code, .. } => code,
         }
     }
 
@@ -99,6 +116,7 @@ impl Error {
         match self {
             Self::Upstream { status, .. } => *status >= 300,
             Self::RateLimited { .. } => true,
+            Self::CreditsExhausted { .. } => true,
             Self::ConnectFailed { .. } => true,
             _ => false,
         }
@@ -106,11 +124,14 @@ impl Error {
 
     pub const fn remedy(&self) -> &'static str {
         match self {
-            Self::MissingApiKey => {
-                "Set SERPER_API_KEY in the client's env block, or run `ownserp config set-api-key`."
+            Self::MissingApiKey { cause: None } => {
+                "Set SERPER_API_KEY in the server's environment, or run `ownserp config set-api-key`, then restart the server."
+            }
+            Self::MissingApiKey { cause: Some(_) } => {
+                "The OS keychain could not be read. Set SERPER_API_KEY in the server's environment, or start a keyring service and run `ownserp config set-api-key`, then restart the server."
             }
             Self::InvalidArgs(_) => {
-                "Fix the argument named in the message and call the tool again."
+                "Fix the argument the message describes and call the tool again."
             }
             Self::Upstream { status, .. } => match status {
                 400 | 422 => "Fix the request the message names, then try again.",
@@ -125,11 +146,16 @@ impl Error {
             Self::RateLimited { .. } => {
                 "Lower the call rate or wait; Serper publishes no retry-after header."
             }
+            Self::CreditsExhausted { .. } => {
+                "Top up the account at https://serper.dev/dashboard, then call the tool again."
+            }
             Self::BudgetRefused(_) => {
-                "Raise the per-call ceiling or the session budget in settings."
+                "Raise the per-call ceiling or the session budget in the profile or the server's environment, then restart the server; or lower num or split the batch to fit the current limit."
             }
             Self::Network { .. } => "Check network reachability, then retry.",
-            Self::Config(_) => "Run `ownserp doctor` to see every resolved setting and its source.",
+            Self::Config(_) => {
+                "Fix the setting the message names in the profile or the server's environment; `ownserp doctor` shows each resolved value and where it came from."
+            }
             Self::Keychain { .. } => {
                 "Use SERPER_API_KEY instead, or start a session bus with a keyring service."
             }
@@ -143,13 +169,20 @@ impl Error {
                 "The answer was read but could not be shaped. Report the tool and the arguments."
             }
             Self::Ledger(_) | Self::Io { .. } => {
-                "Check the ledger directory permissions and free space."
+                "Check the ledger directory permissions and free space, then restart the server; if the chain is damaged, run `ownserp audit rotate --archive-damaged`."
             }
             Self::UnknownTool { .. } => {
                 "Call tools/list and use only the names it returns for this configuration."
             }
+            Self::ToolDisabled { .. } => {
+                "Set the named profile key or environment variable and restart the server."
+            }
             Self::Cancelled => "Call the tool again if the work is still needed.",
+            Self::DeadlineExceeded => {
+                "The call may already have been billed. Retry with a narrower request, or raise request_timeout_secs and restart the server."
+            }
             Self::ConnectFailed { .. } => "Check network reachability, then retry.",
+            Self::Refused { remedy, .. } => remedy,
         }
     }
 
@@ -160,7 +193,10 @@ impl Error {
         body.insert("code".to_owned(), json!(self.code()));
         body.insert("message".to_owned(), json!(message));
         body.insert("remedy".to_owned(), json!(self.remedy()));
-        if matches!(self, Self::Network { .. }) {
+        if matches!(
+            self,
+            Self::Network { .. } | Self::MissingApiKey { cause: Some(_) }
+        ) {
             let causes: Vec<String> = self
                 .causes()
                 .into_iter()
@@ -176,6 +212,9 @@ impl Error {
 
     pub fn causes(&self) -> Vec<String> {
         let mut chain = Vec::new();
+        if let Self::MissingApiKey { cause: Some(cause) } = self {
+            chain.push(redact_url_queries(cause));
+        }
         let mut current: Option<&(dyn StdError + 'static)> = self.source();
         while let Some(error) = current {
             chain.push(redact_url_queries(&error.to_string()));
@@ -326,7 +365,7 @@ mod tests {
     #[test]
     fn a_busy_ledger_and_a_bad_request_carry_their_own_advice() {
         let busy = Error::LedgerBusy("held".to_owned());
-        assert_eq!(busy.code(), "serper.internal_error");
+        assert_eq!(busy.code(), "serper.ledger_fault");
         assert!(busy.remedy().contains("Another ownserp process"));
 
         let bad_request = Error::Upstream {

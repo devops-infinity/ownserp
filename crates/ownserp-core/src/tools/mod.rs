@@ -61,12 +61,9 @@ fn build_tool(spec: &'static ToolSpec) -> Result<Tool> {
         .with_title(spec.title)
         .annotate(
             ToolAnnotations::new()
-                .read_only(true)
+                .read_only(specs::free(spec))
                 .destructive(false)
-                .idempotent(matches!(
-                    spec.name,
-                    "serper_locations" | "serper_session" | "serper_health"
-                ))
+                .idempotent(specs::free(spec))
                 .open_world(true),
         );
     Ok(match spec.name {

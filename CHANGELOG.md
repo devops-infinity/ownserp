@@ -6,6 +6,46 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Added
+
+- `ownserp update` reports the latest release and the upgrade command for this install channel, and `--json` gives the same answer for scripts.
+- `ownserp audit remove --yes` deletes the live ledger, its archives, and the arguments key, and prints each path it removed.
+- `ownserp audit rotate --archive-damaged` archives a ledger whose chain is broken, up to the last row that verified, so a fresh chain can start.
+- `ownserp audit verify` and `ownserp audit rotate` accept `--profile` and `--ledger-dir`, and every audit message prints the resolved path.
+- `serper_session` reports a `ledger` block with `healthy`, `queued`, `lost`, and `creditsStale`, and `liveBalanceError` when the balance probe fails.
+- `tools/smoke.sh` probes a deployed server, and the gate now checks suppression recheck dates and the manifest versions.
+
+### Changed
+
+- A paid tool call with no API key is refused before any network call with `serper.auth_missing`, and the cause names an unreadable keychain when that is the reason.
+- An exhausted Serper balance reports `serper.credits_exhausted` and names the top-up step, instead of reporting a rate limit.
+- The server's own deadline reports `serper.deadline_exceeded` instead of telling the client it cancelled.
+- Every HTTP refusal carries the `code`, `message`, and `remedy` object instead of a bare sentence.
+- A disabled batch tool reports `serper.tool_disabled` and names `enable_batch`.
+- Ledger faults report `serper.ledger_fault`, and the remedy names the repair command.
+- Paid tools no longer advertise the read-only hint, and only free tools report idempotent.
+- `ownserp doctor` prints the cause and the fix when a setting cannot be resolved, and reports the credit ceilings, session budget, request timeout, bearer count, and bind.
+- The CLI prints an error's remedy after its cause chain.
+- `ownserp config set-api-key` says when `SERPER_API_KEY` will take precedence over the key it just stored.
+- `ownserp config show` help points at `ownserp doctor` for the full settings report.
+- `rmcp` is updated to 3.8.0.
+
+### Fixed
+
+- TLS verification no longer depends on the host trust store. The client trusts the Mozilla root set bundled into the binary and adds the platform roots when they load, so a container without `ca-certificates`, a keychain-less macOS shell, and a static build all verify Serper and the release lookup. Before this, a macOS shell whose keychain chain could not be built failed every handshake with `UnknownIssuer`, and a host with no readable CA bundle failed at client build with `No CA certificates were loaded from the system`.
+- A missing or unreadable keychain no longer looks the same to the caller as a key that was never set.
+- A truncated search result reports the delivered count and names the next step, and a trimmed batch says how many queries were left out.
+- A paid response that fails shaping is cached before shaping, so a retry does not pay Serper again.
+- The ledger's shutdown flush takes the file lock and notices a replaced file.
+- A failed ledger append keeps its rows for a retry and clears the unhealthy flag on the next successful write.
+- A final ledger row that only lost its newline is kept and terminated instead of dropped.
+- A ledger row now carries the format version, and a file written by a newer binary is refused by name.
+- The budget left in `serper_session` counts queued credits, so it matches what the guard will allow.
+- A connection that stays silent for ten seconds is dropped, so an idle socket cannot hold a slot forever.
+- The stdio transport cancels an in-flight call on a signal and has a call deadline.
+- A Host that carries a trailing dot is refused by one rule instead of two different messages.
+- An arguments key that another user can read is refused at startup.
+
 ## [2.0.0] - 2026-10-25
 
 ### Added
