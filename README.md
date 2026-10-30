@@ -315,6 +315,8 @@ Every tool description in the tool list states the price, so a model can budget 
 
 `serper_search` sends `num: 10` when the caller leaves `num` out, so one call always asks for a full Google page for the same credit. Raise `num` up to 100 to ask for more in one call, and keep `page` in step with it.
 
+`serper_search` also asks Google for results from the last year unless the caller says otherwise, because a reference older than that is often out of date. A call that sets `tbs` picks another window, and `tbs: all` searches every year. The default window comes from `default_freshness` in the profile or `OWN_SERPER_DEFAULT_FRESHNESS` in the environment, which take `hour`, `day`, `week`, `month`, `year`, or `all`.
+
 ## Response shape and field presets
 
 Every result tool takes `fields`, defaulting to `standard`.
@@ -421,6 +423,7 @@ enable_batch = false
 http = false
 bind = "127.0.0.1:8777"
 request_timeout_secs = 30
+default_freshness = "year"
 ```
 
 `version` is the profile schema version. It is 1 today, and a profile that names a newer version is refused by name.
@@ -431,9 +434,9 @@ request_timeout_secs = 30
 
 A custom pack with no `usd_per_1k` reports credits with no dollar figure, because the rate is unknown.
 
-The cache is off by default. `cache_ttl_secs` above zero turns it on; a hit answers with `cacheHit: true` and charges nothing. A call with `tbs` set skips the cache.
+The cache is off by default. `cache_ttl_secs` above zero turns it on; a hit answers with `cacheHit: true` and charges nothing. A call that sets `tbs` itself skips the cache, and the default freshness window does not.
 
-`ownserp doctor` prints the resolved settings, masks the key, names where the key came from, and probes both hosts. `ownserp config show` prints the key source, the masked key, the credit pack, the ledger directory, and the profile path.
+`ownserp doctor` prints the resolved settings, including the default freshness window, masks the key, names where the key came from, and probes both hosts. `ownserp config show` prints the key source, the masked key, the credit pack, the ledger directory, and the profile path.
 
 ## HTTP deployment
 

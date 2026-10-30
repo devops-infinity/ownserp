@@ -306,7 +306,7 @@ async fn search_from_args(
     args: SearchArgs,
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
-    let body = args.body(endpoint)?;
+    let body = args.body(endpoint, ctx.settings.default_freshness())?;
     let credits = endpoint.estimated_cost(args.num).get();
     let cacheable = args.tbs.is_none();
     search_and_record(
@@ -910,7 +910,7 @@ async fn batch(
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
     let endpoint = args.kind.endpoint();
-    let bodies = args.bodies()?;
+    let bodies = args.bodies(ctx.settings.default_freshness())?;
     let total = args
         .queries
         .iter()

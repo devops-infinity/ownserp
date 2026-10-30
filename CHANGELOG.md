@@ -6,6 +6,14 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Added
+
+- `default_freshness` in the profile and `OWN_SERPER_DEFAULT_FRESHNESS` in the environment set the window a web search asks for, and `tbs: all` searches every year.
+
+### Changed
+
+- A web search asks Google for the last year by default. Before this, no window was sent, so results came from every year.
+
 ## [2.2.0] - 2026-10-30
 
 ### Added

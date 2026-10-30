@@ -1,5 +1,5 @@
 use anyhow::{Context, bail};
-use ownserp_core::{ApiKeySource, SerperClient, Settings};
+use ownserp_core::{ApiKeySource, SerperClient, Settings, TimeFilter};
 
 use crate::cli::DoctorArgs;
 use crate::output::emit;
@@ -50,6 +50,12 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
     emit(&format!(
         "request timeout seconds: {}",
         settings.request_timeout_secs()
+    ))?;
+    emit(&format!(
+        "default search freshness: {}",
+        settings
+            .default_freshness()
+            .map_or("all years", TimeFilter::name)
     ))?;
     emit(&format!(
         "bearer tokens configured: {}",

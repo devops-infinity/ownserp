@@ -4,7 +4,7 @@ use secrecy::{ExposeSecret, SecretString};
 use serde::Deserialize;
 
 use crate::error::{Error, Result};
-use crate::types::{ApiKeySource, PackTier};
+use crate::types::{ApiKeySource, PackTier, TimeFilter};
 
 pub const KEYRING_SERVICE: &str = "ownserp";
 pub const KEYRING_USER: &str = "serper-api-key";
@@ -38,6 +38,7 @@ pub struct Settings {
     session_budget_credits: Option<u64>,
     enable_batch: bool,
     request_timeout_secs: u64,
+    default_freshness: Option<TimeFilter>,
     profile_path: Option<PathBuf>,
 }
 
@@ -58,6 +59,23 @@ struct Profile {
     bind: Option<String>,
     allowed_hosts: Option<Vec<String>>,
     request_timeout_secs: Option<u64>,
+    #[serde(default, deserialize_with = "freshness_from_toml")]
+    default_freshness: Option<TimeFilter>,
+}
+
+fn freshness_from_toml<'de, D>(deserializer: D) -> std::result::Result<Option<TimeFilter>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let raw = Option::<String>::deserialize(deserializer)?;
+    raw.map(|name| {
+        TimeFilter::from_name(&name).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "{name} is not hour, day, week, month, year, or all"
+            ))
+        })
+    })
+    .transpose()
 }
 
 impl Settings {
@@ -194,6 +212,19 @@ impl Settings {
                 "request_timeout_secs is {request_timeout_secs}; use 1 to {MAX_REQUEST_TIMEOUT_SECS}"
             )));
         }
+        let freshness_env = match non_empty_env(&env, "OWN_SERPER_DEFAULT_FRESHNESS") {
+            Some(raw) => Some(TimeFilter::from_name(&raw).ok_or_else(|| {
+                Error::Config(format!(
+                    "OWN_SERPER_DEFAULT_FRESHNESS is {raw}; use hour, day, week, month, year, or all"
+                ))
+            })?),
+            None => None,
+        };
+        let default_freshness = match freshness_env.or(profile.default_freshness) {
+            None => Some(TimeFilter::Year),
+            Some(TimeFilter::All) => None,
+            Some(filter) => Some(filter),
+        };
         Ok(Self {
             api_key,
             api_key_source,
@@ -222,6 +253,7 @@ impl Settings {
                 .or(profile.enable_batch)
                 .unwrap_or(false),
             request_timeout_secs,
+            default_freshness,
             profile_path,
         })
     }
@@ -294,6 +326,10 @@ impl Settings {
 
     pub fn request_timeout_secs(&self) -> u64 {
         self.request_timeout_secs
+    }
+
+    pub fn default_freshness(&self) -> Option<TimeFilter> {
+        self.default_freshness
     }
 
     pub fn profile_path(&self) -> Option<&Path> {
@@ -615,6 +651,47 @@ mod tests {
             cache_ttl_secs: Some(0),
             ..Overrides::default()
         }
+    }
+
+    #[test]
+    fn a_search_keeps_a_year_of_freshness_unless_told_otherwise() {
+        let settings = load("freshness-default", "", &[], base_overrides()).expect("settings");
+        assert_eq!(settings.default_freshness(), Some(TimeFilter::Year));
+
+        let env_set = load(
+            "freshness-env",
+            "",
+            &[("OWN_SERPER_DEFAULT_FRESHNESS", "month")],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(env_set.default_freshness(), Some(TimeFilter::Month));
+
+        let profile_set = load(
+            "freshness-profile",
+            "default_freshness = \"week\"\n",
+            &[],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(profile_set.default_freshness(), Some(TimeFilter::Week));
+
+        let off = load(
+            "freshness-off",
+            "default_freshness = \"all\"\n",
+            &[],
+            base_overrides(),
+        )
+        .expect("settings");
+        assert_eq!(off.default_freshness(), None);
+
+        let bad = load(
+            "freshness-bad",
+            "",
+            &[("OWN_SERPER_DEFAULT_FRESHNESS", "decade")],
+            base_overrides(),
+        );
+        assert!(bad.is_err());
     }
 
     #[test]
