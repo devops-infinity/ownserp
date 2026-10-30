@@ -6,6 +6,15 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Added
+
+- `auto_resolve_links` in the profile and `OWN_SERPER_AUTO_RESOLVE_LINKS` in the environment control whether a search resolves its Google redirect links before answering. It is on by default and free, and a call passes `resolve_links: false` to leave the links as Google sent them.
+
+### Changed
+
+- A search sends its response to `/resolve` before answering, so `link` holds the real destination instead of a `google.com/goto` redirect. The call costs nothing, and the cache holds the resolved links.
+- `serper_images` and `serper_videos` take the default freshness window as well. Only `serper_search` did before.
+
 ## [2.3.0] - 2026-10-30
 
 ### Added

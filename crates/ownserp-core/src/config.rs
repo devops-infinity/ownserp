@@ -39,6 +39,7 @@ pub struct Settings {
     enable_batch: bool,
     request_timeout_secs: u64,
     default_freshness: Option<TimeFilter>,
+    auto_resolve_links: bool,
     profile_path: Option<PathBuf>,
 }
 
@@ -61,6 +62,7 @@ struct Profile {
     request_timeout_secs: Option<u64>,
     #[serde(default, deserialize_with = "freshness_from_toml")]
     default_freshness: Option<TimeFilter>,
+    auto_resolve_links: Option<bool>,
 }
 
 fn freshness_from_toml<'de, D>(deserializer: D) -> std::result::Result<Option<TimeFilter>, D::Error>
@@ -225,6 +227,10 @@ impl Settings {
             Some(TimeFilter::All) => None,
             Some(filter) => Some(filter),
         };
+        let auto_resolve_env = env_parse::<bool>(&env, "OWN_SERPER_AUTO_RESOLVE_LINKS")?;
+        let auto_resolve_links = auto_resolve_env
+            .or(profile.auto_resolve_links)
+            .unwrap_or(true);
         Ok(Self {
             api_key,
             api_key_source,
@@ -254,6 +260,7 @@ impl Settings {
                 .unwrap_or(false),
             request_timeout_secs,
             default_freshness,
+            auto_resolve_links,
             profile_path,
         })
     }
@@ -330,6 +337,10 @@ impl Settings {
 
     pub fn default_freshness(&self) -> Option<TimeFilter> {
         self.default_freshness
+    }
+
+    pub fn auto_resolve_links(&self) -> bool {
+        self.auto_resolve_links
     }
 
     pub fn profile_path(&self) -> Option<&Path> {

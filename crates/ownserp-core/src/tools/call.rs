@@ -306,7 +306,13 @@ async fn search_from_args(
     args: SearchArgs,
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
-    let body = args.body(endpoint, ctx.settings.default_freshness())?;
+    let resolve_links = args
+        .resolve_links
+        .unwrap_or_else(|| ctx.settings.auto_resolve_links());
+    let mut body = args.body(endpoint, ctx.settings.default_freshness())?;
+    if resolve_links && let Some(object) = body.as_object_mut() {
+        object.insert("resolveLinks".to_owned(), Value::Bool(false));
+    }
     let credits = endpoint.estimated_cost(args.num).get();
     let cacheable = args.tbs.is_none();
     search_and_record(
@@ -317,9 +323,26 @@ async fn search_from_args(
         args.text_mode(),
         credits,
         cacheable,
+        resolve_links,
         cancellation,
     )
     .await
+}
+
+async fn resolve_in_place(ctx: &ToolContext, raw: &mut Value, cancellation: &CancellationToken) {
+    if !projection::holds_goto_link(raw) {
+        return;
+    }
+    match ctx.client.post(Endpoint::Resolve, raw, cancellation).await {
+        Ok(resolved) => {
+            if projection::adopt_resolved_links(raw, &resolved) == 0 {
+                tracing::warn!("the response held a Google link that resolve did not replace");
+            }
+        }
+        Err(error) => {
+            tracing::warn!(%error, "the redirect links could not be resolved before answering");
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -331,6 +354,7 @@ async fn search_and_record(
     mode: TextMode,
     credits: u32,
     cacheable: bool,
+    resolve_links: bool,
     cancellation: &CancellationToken,
 ) -> Result<CallToolResult> {
     let started = Instant::now();
@@ -345,7 +369,7 @@ async fn search_and_record(
         Some((raw, age)) => (raw, Some(age)),
         None => {
             _reservation = reserve_budget(ctx, credits).await?;
-            let raw = match ctx.client.post(endpoint, &body, cancellation).await {
+            let mut raw = match ctx.client.post(endpoint, &body, cancellation).await {
                 Ok(raw) => raw,
                 Err(error) => {
                     append_failure(
@@ -361,6 +385,9 @@ async fn search_and_record(
                     return Err(error);
                 }
             };
+            if resolve_links {
+                resolve_in_place(ctx, &mut raw, cancellation).await;
+            }
             (Arc::new(raw), None)
         }
     };
@@ -700,6 +727,7 @@ async fn reviews(
         args.text_mode(),
         credits,
         false,
+        false,
         cancellation,
     )
     .await
@@ -719,6 +747,7 @@ async fn lens(
         args.preset(),
         args.text_mode(),
         credits,
+        false,
         false,
         cancellation,
     )

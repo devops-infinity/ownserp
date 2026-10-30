@@ -58,6 +58,10 @@ pub(crate) fn run(args: DoctorArgs) -> anyhow::Result<()> {
             .map_or("all years", TimeFilter::name)
     ))?;
     emit(&format!(
+        "resolve redirect links before answering: {}",
+        settings.auto_resolve_links()
+    ))?;
+    emit(&format!(
         "bearer tokens configured: {}",
         settings.bearer_tokens().len()
     ))?;

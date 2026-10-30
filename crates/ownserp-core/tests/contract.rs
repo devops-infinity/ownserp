@@ -500,6 +500,82 @@ async fn locations_are_free_and_unauthenticated() {
 }
 
 #[tokio::test]
+async fn a_search_answers_with_the_real_links_by_default() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "organic": [
+                {"title": "Apple", "link": "https://www.apple.com/", "position": 1},
+                {"title": "Wikipedia", "link": "https://www.google.com/goto?url=CAESa", "position": 2}
+            ],
+            "credits": 1
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/resolve"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "organic": [
+                {"title": "Apple", "link": "https://www.apple.com/", "position": 1},
+                {"title": "Wikipedia", "link": "https://en.wikipedia.org/wiki/Apple_Inc.", "position": 2}
+            ]
+        })))
+        .mount(&server)
+        .await;
+    let ctx = context("auto-resolve", &server.uri(), 0);
+    let args = arguments(json!({"q": "apple"}));
+    let result = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    let value = result_json(&result);
+    assert_eq!(value.get("isError"), Some(&Value::Bool(false)));
+    let body = value.get("structuredContent").expect("structured content");
+    assert_eq!(
+        body.pointer("/results/1/link").and_then(Value::as_str),
+        Some("https://en.wikipedia.org/wiki/Apple_Inc.")
+    );
+    assert_eq!(
+        body.pointer("/cost/credits").and_then(Value::as_u64),
+        Some(1)
+    );
+}
+
+#[tokio::test]
+async fn a_search_leaves_the_redirects_when_resolution_is_off() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/search"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "organic": [
+                {"title": "Wikipedia", "link": "https://www.google.com/goto?url=CAESa", "position": 1}
+            ],
+            "credits": 1
+        })))
+        .mount(&server)
+        .await;
+    let ctx = context("auto-resolve-off", &server.uri(), 0);
+    let args = arguments(json!({"q": "apple", "resolve_links": false}));
+    let result = call_tool(
+        &ctx,
+        "serper_search",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    let value = result_json(&result);
+    let body = value.get("structuredContent").expect("structured content");
+    assert_eq!(
+        body.pointer("/results/0/link").and_then(Value::as_str),
+        Some("https://www.google.com/goto?url=CAESa")
+    );
+}
+
+#[tokio::test]
 async fn resolve_turns_google_links_into_destinations_for_free() {
     let server = MockServer::start().await;
     Mock::given(method("POST"))

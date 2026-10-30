@@ -14,7 +14,7 @@ pub const SPECS: &[ToolSpec] = &[
         name: "serper_search",
         title: "Google web search",
         endpoint: Some(Endpoint::Search),
-        description: "Google web results with knowledge graph, answer box, and related searches. Use it for general research; use serper_news for dated stories and serper_scholar for papers.",
+        description: "Google web results with knowledge graph, answer box, and related searches, over the last year and with redirect links resolved to their destinations. Use it for general research; use serper_news for dated stories and serper_scholar for papers.",
     },
     ToolSpec {
         name: "serper_images",
