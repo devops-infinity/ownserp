@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [2.4.0] - 2026-10-30
+
 ### Added
 
 - `auto_resolve_links` in the profile and `OWN_SERPER_AUTO_RESOLVE_LINKS` in the environment control whether a search resolves its Google redirect links before answering. It is on by default and free, and a call passes `resolve_links: false` to leave the links as Google sent them.
@@ -360,3 +362,5 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 [2.2.0]: https://github.com/devops-infinity/ownserp/compare/v2.1.0...v2.2.0
 
 [2.3.0]: https://github.com/devops-infinity/ownserp/compare/v2.2.0...v2.3.0
+
+[2.4.0]: https://github.com/devops-infinity/ownserp/compare/v2.3.0...v2.4.0
