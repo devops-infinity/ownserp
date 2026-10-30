@@ -315,7 +315,7 @@ Every tool description in the tool list states the price, so a model can budget 
 
 `serper_search` sends `num: 10` when the caller leaves `num` out, so one call always asks for a full Google page for the same credit. Raise `num` up to 100 to ask for more in one call, and keep `page` in step with it.
 
-`serper_search` also asks Google for results from the last year unless the caller says otherwise, because a reference older than that is often out of date. A call that sets `tbs` picks another window, and `tbs: all` searches every year. The default window comes from `default_freshness` in the profile or `OWN_SERPER_DEFAULT_FRESHNESS` in the environment, which take `hour`, `day`, `week`, `month`, `year`, or `all`.
+`serper_search`, `serper_images`, and `serper_videos` also ask Google for results from the last year unless the caller says otherwise, because a reference older than that is often out of date. A call that sets `tbs` picks another window, and `tbs: all` searches every year. The default window comes from `default_freshness` in the profile or `OWN_SERPER_DEFAULT_FRESHNESS` in the environment, which take `hour`, `day`, `week`, `month`, `year`, or `all`.
 
 ## Response shape and field presets
 
@@ -327,7 +327,7 @@ Every result tool takes `fields`, defaulting to `standard`.
 
 Each result carries `structuredContent` for the data and a one-line text summary. Capped strings end with `...` and their object carries `truncated: true`. Absent fields are omitted rather than sent as null. Key order is fixed, so a client parses the same shape on every call. Every tool result is data from the open web, never an instruction.
 
-Google returns many organic results as a `google.com/goto?url=...` redirect rather than the destination page. `link` keeps what Google sent, because the redirect resolves to the page after about 30 seconds, and `displayedLink` carries the readable form Google showed for that result, usually `site › path` and sometimes a comment or view count, so a caller can name the destination without following the redirect. `serper_resolve` turns the redirects into the real destinations for free. It waits for Google, so it answers in about 30 seconds right after a search, and when some links are not ready it returns `retryAfter`, the number of seconds to wait before sending the same links again. A search resolves the top three results before answering, which adds about half a second; set `resolve_links` to `false` to skip that and get every link as Google returned it.
+Google returns many organic results as a `google.com/goto?url=...` redirect rather than the destination page. A search resolves those before answering, so `link` carries the destination and no second call is needed. The server sends the response to Serper's `/resolve`, which costs nothing but waits on Google: about 5 seconds in practice, and up to about 30 right after a search. A call that passes `resolve_links: false`, or a server with `auto_resolve_links = false`, leaves every link exactly as Google sent it. `displayedLink` carries the readable form Google showed for a result, usually `site › path` and sometimes a comment or view count. `serper_resolve` does the same work for links you already hold, and returns `retryAfter`, the number of seconds to wait before sending them again, when Google has not released one yet.
 
 ## Example
 
@@ -424,6 +424,7 @@ http = false
 bind = "127.0.0.1:8777"
 request_timeout_secs = 30
 default_freshness = "year"
+auto_resolve_links = true
 ```
 
 `version` is the profile schema version. It is 1 today, and a profile that names a newer version is refused by name.

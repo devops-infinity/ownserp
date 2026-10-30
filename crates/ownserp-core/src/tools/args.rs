@@ -71,7 +71,7 @@ impl SearchArgs {
         }
         let tbs = match self.tbs {
             Some(filter) => Some(filter),
-            None if endpoint == Endpoint::Search => default_freshness,
+            None if endpoint.accepts_freshness() => default_freshness,
             None => None,
         };
         if let Some(value) = tbs.and_then(TimeFilter::as_str) {
@@ -79,9 +79,6 @@ impl SearchArgs {
         }
         if let Some(autocorrect) = self.autocorrect {
             body.insert("autocorrect".to_owned(), Value::Bool(autocorrect));
-        }
-        if let Some(resolve_links) = self.resolve_links {
-            body.insert("resolveLinks".to_owned(), Value::Bool(resolve_links));
         }
         if let Some(location) = &self.location {
             let location = crate::types::LocationQuery::try_from(location.clone())?;
@@ -676,16 +673,13 @@ mod tests {
     }
 
     #[test]
-    fn a_search_asks_serper_to_resolve_links_only_when_told() {
+    fn the_resolve_links_argument_is_read_by_the_caller() {
         let quiet = parse_search_args(serde_json::json!({"q": "apple"}));
-        let body = quiet.body(Endpoint::Search, None).expect("body");
-        assert!(body.get("resolveLinks").is_none());
+        assert_eq!(quiet.resolve_links, None);
         let told = parse_search_args(serde_json::json!({"q": "apple", "resolve_links": false}));
+        assert_eq!(told.resolve_links, Some(false));
         let body = told.body(Endpoint::Search, None).expect("body");
-        assert_eq!(
-            body.get("resolveLinks").and_then(Value::as_bool),
-            Some(false)
-        );
+        assert!(body.get("resolveLinks").is_none());
     }
 
     #[test]
@@ -815,16 +809,25 @@ mod tests {
     }
 
     #[test]
-    fn a_web_search_takes_the_configured_freshness_window() {
+    fn a_search_takes_the_configured_freshness_window() {
         let args = parse_search_args(serde_json::json!({"q": "apple"}));
-        let body = args
-            .body(Endpoint::Search, Some(TimeFilter::Year))
-            .expect("body");
-        assert_eq!(body.get("tbs").and_then(Value::as_str), Some("qdr:y"));
-        let images = args
-            .body(Endpoint::Images, Some(TimeFilter::Year))
-            .expect("images body");
-        assert!(images.get("tbs").is_none());
+        for endpoint in [Endpoint::Search, Endpoint::Images, Endpoint::Videos] {
+            let body = args.body(endpoint, Some(TimeFilter::Year)).expect("body");
+            assert_eq!(
+                body.get("tbs").and_then(Value::as_str),
+                Some("qdr:y"),
+                "{} lost the window",
+                endpoint.tool_name()
+            );
+        }
+        for endpoint in [Endpoint::News, Endpoint::Places] {
+            let body = args.body(endpoint, Some(TimeFilter::Year)).expect("body");
+            assert!(
+                body.get("tbs").is_none(),
+                "{} took a window it does not use",
+                endpoint.tool_name()
+            );
+        }
         let off = args.body(Endpoint::Search, None).expect("body");
         assert!(off.get("tbs").is_none());
     }

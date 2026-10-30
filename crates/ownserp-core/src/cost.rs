@@ -102,6 +102,10 @@ impl Endpoint {
         !matches!(self, Self::Locations)
     }
 
+    pub const fn accepts_freshness(self) -> bool {
+        matches!(self, Self::Search | Self::Images | Self::Videos)
+    }
+
     pub fn estimated_cost(self, num_results: Option<u8>) -> CreditCost {
         let base = self.base_cost();
         if self == Self::Images && num_results.is_some_and(|count| count > 10) {

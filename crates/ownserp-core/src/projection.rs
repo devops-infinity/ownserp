@@ -716,6 +716,45 @@ pub(crate) fn locations(raw: &Value) -> Vec<LocationItem> {
         .collect()
 }
 
+pub(crate) fn holds_goto_link(value: &Value) -> bool {
+    match value {
+        Value::String(text) => text.contains("google.com/goto"),
+        Value::Array(items) => items.iter().any(holds_goto_link),
+        Value::Object(map) => map.values().any(holds_goto_link),
+        _ => false,
+    }
+}
+
+pub(crate) fn adopt_resolved_links(target: &mut Value, resolved: &Value) -> usize {
+    match (target, resolved) {
+        (Value::Object(left), Value::Object(right)) => {
+            let mut changed = 0;
+            for (key, value) in left.iter_mut() {
+                let Some(pair) = right.get(key) else {
+                    continue;
+                };
+                if key == "link"
+                    && let (Some(old), Some(new)) = (value.as_str(), pair.as_str())
+                    && old != new
+                    && (new.starts_with("https://") || new.starts_with("http://"))
+                {
+                    *value = Value::String(new.to_owned());
+                    changed += 1;
+                    continue;
+                }
+                changed += adopt_resolved_links(value, pair);
+            }
+            changed
+        }
+        (Value::Array(left), Value::Array(right)) if left.len() == right.len() => left
+            .iter_mut()
+            .zip(right.iter())
+            .map(|(left, right)| adopt_resolved_links(left, right))
+            .sum(),
+        _ => 0,
+    }
+}
+
 pub(crate) fn resolved_links(raw: &Value, sent: &[String]) -> (Vec<ResolvedLink>, Option<u64>) {
     let returned = array(raw, "organic");
     let items = sent
