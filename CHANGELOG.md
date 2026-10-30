@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-30
+
 ### Added
 
 - `serper_resolve` turns the `google.com/goto` links a search returns into the real destination URLs at no cost, through Serper's `/resolve` endpoint. When Google has not released a link yet, the response carries `retryAfter` and the same links are sent again after that many seconds.
@@ -335,3 +337,5 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 [2.0.0]: https://github.com/devops-infinity/ownserp/compare/v1.3.1...v2.0.0
 
 [2.1.0]: https://github.com/devops-infinity/ownserp/compare/v2.0.0...v2.1.0
+
+[2.2.0]: https://github.com/devops-infinity/ownserp/compare/v2.1.0...v2.2.0
