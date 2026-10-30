@@ -52,6 +52,7 @@ fn organic(title: &str, link: &str, snippet: &str, position: u32) -> OrganicItem
     OrganicItem {
         title: Some(title.to_owned()),
         link: Some(link.to_owned()),
+        displayed_link: None,
         snippet: Some(snippet.to_owned()),
         position: Some(position),
         date: None,
@@ -491,6 +492,53 @@ async fn locations_are_free_and_unauthenticated() {
         body.pointer("/results/0/canonicalName")
             .and_then(Value::as_str),
         Some("Dhaka,Bangladesh")
+    );
+    assert_eq!(
+        body.pointer("/cost/credits").and_then(Value::as_u64),
+        Some(0)
+    );
+}
+
+#[tokio::test]
+async fn resolve_turns_google_links_into_destinations_for_free() {
+    let server = MockServer::start().await;
+    Mock::given(method("POST"))
+        .and(path("/resolve"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "organic": [
+                {"title": "Apple Inc. - Wikipedia", "link": "https://en.wikipedia.org/wiki/Apple_Inc."},
+                {"title": "Apple", "link": "https://www.google.com/goto?url=CAESb"}
+            ],
+            "retryAfter": 20
+        })))
+        .mount(&server)
+        .await;
+    let ctx = context("resolve", &server.uri(), 0);
+    let args = arguments(json!({"links": [
+        "https://www.google.com/goto?url=CAESa",
+        "https://www.google.com/goto?url=CAESb"
+    ]}));
+    let result = call_tool(
+        &ctx,
+        "serper_resolve",
+        Some(&args),
+        &CancellationToken::new(),
+    )
+    .await;
+    let value = result_json(&result);
+    assert_eq!(value.get("isError"), Some(&Value::Bool(false)));
+    let body = value.get("structuredContent").expect("structured content");
+    assert_eq!(
+        body.pointer("/results/0/resolved").and_then(Value::as_str),
+        Some("https://en.wikipedia.org/wiki/Apple_Inc.")
+    );
+    assert_eq!(
+        body.pointer("/results/1/resolved").and_then(Value::as_str),
+        Some("https://www.google.com/goto?url=CAESb")
+    );
+    assert_eq!(
+        body.pointer("/retryAfter").and_then(Value::as_u64),
+        Some(20)
     );
     assert_eq!(
         body.pointer("/cost/credits").and_then(Value::as_u64),

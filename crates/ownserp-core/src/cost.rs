@@ -33,6 +33,7 @@ pub enum Endpoint {
     Lens,
     Scrape,
     Locations,
+    Resolve,
 }
 
 pub const BATCH_MULTIPLIER: u32 = 3;
@@ -55,6 +56,7 @@ impl Endpoint {
             Self::Lens => "/lens",
             Self::Scrape => "/",
             Self::Locations => "/locations",
+            Self::Resolve => "/resolve",
         }
     }
 
@@ -71,7 +73,7 @@ impl Endpoint {
             Self::Maps | Self::Lens => CreditCost::new(3),
             Self::Shopping => CreditCost::new(2),
             Self::Scrape => CreditCost::new(2),
-            Self::Locations => CreditCost::new(0),
+            Self::Locations | Self::Resolve => CreditCost::new(0),
             _ => CreditCost::new(1),
         }
     }
@@ -92,6 +94,7 @@ impl Endpoint {
             Self::Lens => "serper_lens",
             Self::Scrape => "serper_scrape",
             Self::Locations => "serper_locations",
+            Self::Resolve => "serper_resolve",
         }
     }
 

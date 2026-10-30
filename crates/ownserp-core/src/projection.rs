@@ -2,8 +2,8 @@ use serde_json::Value;
 
 use crate::response::{
     AnswerBox, ImageItem, KnowledgeGraph, LensItem, LocationItem, NewsItem, OrganicItem,
-    PatentItem, PeopleAlsoAsk, PlaceItem, ReviewItem, ScholarItem, ShoppingItem, Suggestion,
-    VideoItem,
+    PatentItem, PeopleAlsoAsk, PlaceItem, ResolvedLink, ReviewItem, ScholarItem, ShoppingItem,
+    Suggestion, VideoItem,
 };
 use crate::types::Preset;
 
@@ -273,6 +273,7 @@ pub(crate) fn organic(raw: &Value, preset: Preset) -> (Vec<OrganicItem>, bool) {
         items.push(OrganicItem {
             title: text_field(value, "title"),
             link: text_field(value, "link"),
+            displayed_link: text_field(value, "displayedLink"),
             snippet,
             position: integer_field(value, "position"),
             date: match preset {
@@ -713,6 +714,26 @@ pub(crate) fn locations(raw: &Value) -> Vec<LocationItem> {
             target_type: text_field(value, "targetType"),
         })
         .collect()
+}
+
+pub(crate) fn resolved_links(raw: &Value, sent: &[String]) -> (Vec<ResolvedLink>, Option<u64>) {
+    let returned = array(raw, "organic");
+    let items = sent
+        .iter()
+        .enumerate()
+        .map(|(index, link)| ResolvedLink {
+            link: Some(sanitize(link)),
+            resolved: returned
+                .get(index)
+                .and_then(|value| text_field(value, "link")),
+        })
+        .collect();
+    let retry_after = raw.get("retryAfter").and_then(|value| {
+        value
+            .as_u64()
+            .or_else(|| value.as_f64().map(|seconds| seconds as u64))
+    });
+    (items, retry_after)
 }
 
 #[derive(Default)]
@@ -1326,6 +1347,30 @@ mod tests {
     }
 
     #[test]
+    fn a_goto_link_keeps_the_destination_google_displayed() {
+        let raw = serde_json::json!({
+            "organic": [{
+                "title": "t",
+                "link": "https://www.google.com/goto?url=CAESabc",
+                "displayedLink": "example.org › posts › why\u{200B}",
+                "position": 4
+            }]
+        });
+        for preset in [Preset::Minimal, Preset::Standard, Preset::Full] {
+            let (items, _) = organic(&raw, preset);
+            let first = items.first().expect("one item");
+            assert_eq!(
+                first.displayed_link.as_deref(),
+                Some("example.org › posts › why")
+            );
+            assert_eq!(
+                first.link.as_deref(),
+                Some("https://www.google.com/goto?url=CAESabc")
+            );
+        }
+    }
+
+    #[test]
     fn the_minimal_preset_keeps_rank_title_and_link() {
         let raw = serde_json::json!({
             "organic": [{"title": "t", "link": "l", "position": 2, "snippet": "s", "date": "d"}]
@@ -1641,6 +1686,40 @@ mod tests {
         assert!(sections.search_parameters.is_none());
         let cleaned = sanitize_value(&serde_json::json!({"a": null, "b": "c"}));
         assert!(cleaned.get("a").is_none());
+    }
+
+    #[test]
+    fn resolved_links_line_up_with_the_links_that_were_sent() {
+        let sent = vec![
+            "https://www.google.com/goto?url=CAESa".to_owned(),
+            "https://example.org/ready".to_owned(),
+        ];
+        let raw = serde_json::json!({
+            "organic": [
+                {"title": "Apple Inc. - Wikipedia", "link": "https://en.wikipedia.org/wiki/Apple_Inc."},
+                {"title": "Apple", "link": "https://www.apple.com/"}
+            ],
+            "retryAfter": 30
+        });
+        let (items, retry_after) = resolved_links(&raw, &sent);
+        assert_eq!(retry_after, Some(30));
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].link.as_deref(), Some(sent[0].as_str()));
+        assert_eq!(
+            items[0].resolved.as_deref(),
+            Some("https://en.wikipedia.org/wiki/Apple_Inc.")
+        );
+        assert_eq!(items[1].resolved.as_deref(), Some("https://www.apple.com/"));
+    }
+
+    #[test]
+    fn a_link_google_did_not_release_stays_ready_for_a_retry() {
+        let sent = vec!["https://www.google.com/goto?url=CAESa".to_owned()];
+        let raw =
+            serde_json::json!({"organic": [{"link": "https://www.google.com/goto?url=CAESa"}]});
+        let (items, retry_after) = resolved_links(&raw, &sent);
+        assert_eq!(retry_after, None);
+        assert_eq!(items[0].resolved.as_deref(), Some(sent[0].as_str()));
     }
 
     #[test]

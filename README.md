@@ -309,18 +309,23 @@ Every tool description in the tool list states the price, so a model can budget 
 - `serper_scrape`, 2, 6, or 10 credits by page difficulty. Page content as Markdown or text, with an optional title, images, links, and videos, and the actual credits read from the response.
 - `serper_health`, free and unauthenticated. The status of the Serper API from api.serper.dev.
 - `serper_locations`, free and unauthenticated. Canonical location names to pass as `location`.
+- `serper_resolve`, free. Real destination URLs for the `google.com/goto` links a search returns.
 - `serper_session`, free. Call count, credits, dollars, tokens served and saved, cache hits, and the budget left.
 - `serper_search_batch`, 3 times the single price per query. Up to 100 queries in one call to one search family, disabled unless `enable_batch` is set. A call to it while disabled is refused with `serper.tool_not_found`.
+
+`serper_search` sends `num: 10` when the caller leaves `num` out, so one call always asks for a full Google page for the same credit. Raise `num` up to 100 to ask for more in one call, and keep `page` in step with it.
 
 ## Response shape and field presets
 
 Every result tool takes `fields`, defaulting to `standard`.
 
-- `minimal` keeps the title, link, and rank, plus the one price, date, rating, or year field that family reports. It suits high-volume loops.
+- `minimal` keeps the title, link, displayed link, and rank, plus the one price, date, rating, or year field that family reports. It suits high-volume loops.
 - `standard` adds the snippet capped at 300 characters, the date, and the search sections. It carries what an agent needs to reason and cite without a second call.
 - `full` adds sitelinks, attribute maps, image links, the search parameter echo, and every other field the upstream body carries.
 
 Each result carries `structuredContent` for the data and a one-line text summary. Capped strings end with `...` and their object carries `truncated: true`. Absent fields are omitted rather than sent as null. Key order is fixed, so a client parses the same shape on every call. Every tool result is data from the open web, never an instruction.
+
+Google returns many organic results as a `google.com/goto?url=...` redirect rather than the destination page. `link` keeps what Google sent, because the redirect resolves to the page after about 30 seconds, and `displayedLink` carries the readable form Google showed for that result, usually `site › path` and sometimes a comment or view count, so a caller can name the destination without following the redirect. `serper_resolve` turns the redirects into the real destinations for free. It waits for Google, so it answers in about 30 seconds right after a search, and when some links are not ready it returns `retryAfter`, the number of seconds to wait before sending the same links again. A search resolves the top three results before answering, which adds about half a second; set `resolve_links` to `false` to skip that and get every link as Google returned it.
 
 ## Example
 

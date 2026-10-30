@@ -95,6 +95,12 @@ pub const SPECS: &[ToolSpec] = &[
         description: "Canonical Serper location names for a place term, to pass as the location argument elsewhere. Call it before a location-filtered search.",
     },
     ToolSpec {
+        name: "serper_resolve",
+        title: "Resolve Google redirect links",
+        endpoint: Some(Endpoint::Resolve),
+        description: "Real destination URLs for the google.com/goto links a search returns. Send the links from a recent search. It waits for Google, so it answers in about 30 seconds right after a search; when links are not ready, the response carries retryAfter and the same links are sent again after that many seconds.",
+    },
+    ToolSpec {
         name: "serper_search_batch",
         title: "Batch search",
         endpoint: None,
@@ -141,7 +147,9 @@ pub(crate) fn cost_sentence(spec: &ToolSpec) -> String {
             "Costs 2, 6, or 10 credits by page difficulty, while the response reports the actual figure. The session budget reserves 10 credits before the call.".to_owned()
         }
         "serper_search_batch" => "Every query costs three times its single price.".to_owned(),
-        "serper_locations" | "serper_session" | "serper_health" => "Free.".to_owned(),
+        "serper_locations" | "serper_resolve" | "serper_session" | "serper_health" => {
+            "Free.".to_owned()
+        }
         _ => {
             let credits = spec
                 .endpoint

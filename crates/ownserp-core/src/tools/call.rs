@@ -17,12 +17,12 @@ use crate::error::{Error, Result};
 use crate::ledger::{CallRecord, Ledger, Reservation};
 use crate::projection::{self, SearchSections};
 use crate::response::{
-    BatchEntry, BatchOutput, CostInfo, Envelope, HealthOutput, ListOutput, ScrapeOutput,
-    SessionOutput, ToolUsage,
+    BatchEntry, BatchOutput, CostInfo, Envelope, HealthOutput, ListOutput, ResolveOutput,
+    ScrapeOutput, SessionOutput, ToolUsage,
 };
 use crate::tools::args::{
-    BatchArgs, HealthArgs, LensArgs, LocationsArgs, MAX_BATCH_QUERIES, ReviewsArgs, ScrapeArgs,
-    SearchArgs, SessionArgs,
+    BatchArgs, HealthArgs, LensArgs, LocationsArgs, MAX_BATCH_QUERIES, ResolveArgs, ReviewsArgs,
+    ScrapeArgs, SearchArgs, SessionArgs,
 };
 use crate::types::{Preset, TextMode};
 
@@ -263,6 +263,7 @@ async fn dispatch(
         "serper_lens" => lens(ctx, parse(arguments)?, cancellation).await,
         "serper_scrape" => scrape(ctx, parse(arguments)?, cancellation).await,
         "serper_locations" => locations(ctx, parse(arguments)?, cancellation).await,
+        "serper_resolve" => resolve(ctx, parse(arguments)?, cancellation).await,
         "serper_search_batch" => {
             reject_oversized_queries(arguments)?;
             batch(ctx, parse(arguments)?, cancellation).await
@@ -609,7 +610,7 @@ fn project(endpoint: Endpoint, raw: &Value, preset: Preset) -> Result<Projection
                 (envelope, count, top)
             }
         }
-        Endpoint::Scrape => {
+        Endpoint::Scrape | Endpoint::Resolve => {
             return Err(Error::InvalidArgs(format!(
                 "{} is not a search family endpoint",
                 endpoint.tool_name()
@@ -850,6 +851,56 @@ async fn locations(
     set_cost(&mut envelope, &cost)?;
     let envelope = projection::fit_to_budget(envelope, projection::MAX_RESULT_BYTES);
     let text = projection::summary_text(result_count(&envelope), top.as_deref(), 0, Some(0.0));
+    Ok(tool_result(envelope, text))
+}
+
+async fn resolve(
+    ctx: &ToolContext,
+    args: ResolveArgs,
+    cancellation: &CancellationToken,
+) -> Result<CallToolResult> {
+    let body = args.body()?;
+    let started = Instant::now();
+    let raw = ctx
+        .client
+        .post(Endpoint::Resolve, &body, cancellation)
+        .await?;
+    let (items, retry_after) = projection::resolved_links(&raw, &args.links);
+    let count = items.len();
+    let top = items.iter().find_map(|item| item.resolved.clone());
+    let output = ResolveOutput {
+        results: items,
+        retry_after,
+        cost: placeholder_cost(),
+        truncated: false,
+    };
+    let mut envelope = serde_json::to_value(output)?;
+    append_call_or_log(
+        ctx,
+        CallRecord {
+            tool: "serper_resolve".to_owned(),
+            endpoint: Endpoint::Resolve.path().to_owned(),
+            args_hash: args_hash(ctx.hash_key.as_ref(), &body),
+            credits_estimated: 0,
+            credits_actual: Some(0),
+            batch_multiplier: 1,
+            duration_ms: elapsed_ms(started),
+            status: "ok".to_owned(),
+            response_bytes: serde_json::to_vec(&envelope)?.len() as u64,
+            tokens: 0,
+            tokens_saved: 0,
+            cache_hit: false,
+        },
+        None,
+    )
+    .await;
+    let cost = cost_info(ctx, 0, None);
+    set_cost(&mut envelope, &cost)?;
+    let envelope = projection::fit_to_budget(envelope, projection::MAX_RESULT_BYTES);
+    let mut text = projection::summary_text(count, top.as_deref(), 0, Some(0.0));
+    if let Some(seconds) = retry_after {
+        text.push_str(&format!("; retry after {seconds}s"));
+    }
     Ok(tool_result(envelope, text))
 }
 
