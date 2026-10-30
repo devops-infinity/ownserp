@@ -138,16 +138,42 @@ pub enum TimeFilter {
     Month,
     #[serde(rename = "qdr:y")]
     Year,
+    #[serde(rename = "all")]
+    All,
 }
 
 impl TimeFilter {
-    pub const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> Option<&'static str> {
         match self {
-            Self::Hour => "qdr:h",
-            Self::Day => "qdr:d",
-            Self::Week => "qdr:w",
-            Self::Month => "qdr:m",
-            Self::Year => "qdr:y",
+            Self::Hour => Some("qdr:h"),
+            Self::Day => Some("qdr:d"),
+            Self::Week => Some("qdr:w"),
+            Self::Month => Some("qdr:m"),
+            Self::Year => Some("qdr:y"),
+            Self::All => None,
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Self> {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "hour" => Some(Self::Hour),
+            "day" => Some(Self::Day),
+            "week" => Some(Self::Week),
+            "month" => Some(Self::Month),
+            "year" => Some(Self::Year),
+            "all" => Some(Self::All),
+            _ => None,
+        }
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Hour => "hour",
+            Self::Day => "day",
+            Self::Week => "week",
+            Self::Month => "month",
+            Self::Year => "year",
+            Self::All => "all",
         }
     }
 }
@@ -243,6 +269,15 @@ mod tests {
             serde_json::to_string(&TimeFilter::Week).expect("serialize"),
             "\"qdr:w\""
         );
+        assert_eq!(TimeFilter::Week.as_str(), Some("qdr:w"));
+        assert_eq!(TimeFilter::All.as_str(), None);
+    }
+
+    #[test]
+    fn a_profile_name_maps_to_a_time_filter() {
+        assert_eq!(TimeFilter::from_name("year"), Some(TimeFilter::Year));
+        assert_eq!(TimeFilter::from_name(" ALL "), Some(TimeFilter::All));
+        assert_eq!(TimeFilter::from_name("decade"), None);
     }
 
     #[test]

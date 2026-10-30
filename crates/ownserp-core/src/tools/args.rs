@@ -48,7 +48,7 @@ impl SearchArgs {
         self.result_text.unwrap_or_default()
     }
 
-    pub fn body(&self, endpoint: Endpoint) -> Result<Value> {
+    pub fn body(&self, endpoint: Endpoint, default_freshness: Option<TimeFilter>) -> Result<Value> {
         let mut body = Map::new();
         body.insert("q".to_owned(), Value::String(validate_query(&self.q)?));
         if let Some(gl) = &self.gl {
@@ -69,8 +69,13 @@ impl SearchArgs {
             }
             body.insert("page".to_owned(), json!(page));
         }
-        if let Some(tbs) = self.tbs {
-            body.insert("tbs".to_owned(), Value::String(tbs.as_str().to_owned()));
+        let tbs = match self.tbs {
+            Some(filter) => Some(filter),
+            None if endpoint == Endpoint::Search => default_freshness,
+            None => None,
+        };
+        if let Some(value) = tbs.and_then(TimeFilter::as_str) {
+            body.insert("tbs".to_owned(), Value::String(value.to_owned()));
         }
         if let Some(autocorrect) = self.autocorrect {
             body.insert("autocorrect".to_owned(), Value::Bool(autocorrect));
@@ -486,7 +491,7 @@ pub struct BatchQueryArgs {
 }
 
 impl BatchQueryArgs {
-    fn body(&self, endpoint: Endpoint) -> Result<Value> {
+    fn body(&self, endpoint: Endpoint, default_freshness: Option<TimeFilter>) -> Result<Value> {
         SearchArgs {
             q: self.q.clone(),
             gl: self.gl.clone(),
@@ -501,7 +506,7 @@ impl BatchQueryArgs {
             fields: None,
             result_text: None,
         }
-        .body(endpoint)
+        .body(endpoint, default_freshness)
     }
 }
 
@@ -525,7 +530,7 @@ impl BatchArgs {
         self.result_text.unwrap_or_default()
     }
 
-    pub fn bodies(&self) -> Result<Vec<Value>> {
+    pub fn bodies(&self, default_freshness: Option<TimeFilter>) -> Result<Vec<Value>> {
         if self.queries.is_empty() {
             return Err(Error::InvalidArgs("queries is empty".into()));
         }
@@ -537,7 +542,7 @@ impl BatchArgs {
         }
         self.queries
             .iter()
-            .map(|query| query.body(self.kind.endpoint()))
+            .map(|query| query.body(self.kind.endpoint(), default_freshness))
             .collect()
     }
 }
@@ -560,13 +565,13 @@ mod tests {
     #[test]
     fn a_web_search_asks_for_a_full_page_by_default() {
         let args = parse_search_args(serde_json::json!({"q": "apple"}));
-        let search = args.body(Endpoint::Search).expect("search body");
+        let search = args.body(Endpoint::Search, None).expect("search body");
         assert_eq!(
             search.get("num").and_then(Value::as_u64),
             Some(u64::from(DEFAULT_RESULT_COUNT))
         );
         let asked = parse_search_args(serde_json::json!({"q": "apple", "num": 100}));
-        let search = asked.body(Endpoint::Search).expect("search body");
+        let search = asked.body(Endpoint::Search, None).expect("search body");
         assert_eq!(search.get("num").and_then(Value::as_u64), Some(100));
     }
 
@@ -574,7 +579,7 @@ mod tests {
     fn a_result_count_outside_web_search_is_sent_only_when_asked() {
         let args = parse_search_args(serde_json::json!({"q": "apple"}));
         for endpoint in [Endpoint::News, Endpoint::Images, Endpoint::Videos] {
-            let body = args.body(endpoint).expect("body");
+            let body = args.body(endpoint, None).expect("body");
             assert!(
                 body.get("num").is_none(),
                 "{} sent a default",
@@ -582,14 +587,14 @@ mod tests {
             );
         }
         let asked = parse_search_args(serde_json::json!({"q": "apple", "num": 20}));
-        let news = asked.body(Endpoint::News).expect("news body");
+        let news = asked.body(Endpoint::News, None).expect("news body");
         assert_eq!(news.get("num").and_then(Value::as_u64), Some(20));
     }
 
     #[test]
     fn a_search_body_carries_only_what_was_set() {
         let args = parse_search_args(serde_json::json!({"q": "apple inc", "gl": "US", "num": 5}));
-        let body = args.body(Endpoint::Search).expect("body");
+        let body = args.body(Endpoint::Search, None).expect("body");
         assert_eq!(body.get("gl").and_then(Value::as_str), Some("us"));
         assert_eq!(body.get("num").and_then(Value::as_u64), Some(5));
         assert!(body.get("hl").is_none());
@@ -599,23 +604,23 @@ mod tests {
     #[test]
     fn search_body_rejects_bad_codes_out_of_range_numbers_and_blank_queries() {
         let bad_gl = parse_search_args(serde_json::json!({"q": "x", "gl": "usa"}));
-        assert!(bad_gl.body(Endpoint::Search).is_err());
+        assert!(bad_gl.body(Endpoint::Search, None).is_err());
         let bad_num = parse_search_args(serde_json::json!({"q": "x", "num": 0}));
-        assert!(bad_num.body(Endpoint::Search).is_err());
+        assert!(bad_num.body(Endpoint::Search, None).is_err());
         let big_num = parse_search_args(serde_json::json!({"q": "x", "num": 101}));
-        assert!(big_num.body(Endpoint::Search).is_err());
+        assert!(big_num.body(Endpoint::Search, None).is_err());
         let bad_page = parse_search_args(serde_json::json!({"q": "x", "page": 0}));
-        assert!(bad_page.body(Endpoint::Search).is_err());
+        assert!(bad_page.body(Endpoint::Search, None).is_err());
         let empty_query = parse_search_args(serde_json::json!({"q": "   "}));
-        assert!(empty_query.body(Endpoint::Search).is_err());
+        assert!(empty_query.body(Endpoint::Search, None).is_err());
     }
 
     #[test]
     fn autocomplete_rejects_parameters_it_does_not_take() {
         let args = parse_search_args(serde_json::json!({"q": "appl", "num": 5}));
-        assert!(args.body(Endpoint::Autocomplete).is_err());
+        assert!(args.body(Endpoint::Autocomplete, None).is_err());
         let valid_args = parse_search_args(serde_json::json!({"q": "appl", "gl": "us"}));
-        assert!(valid_args.body(Endpoint::Autocomplete).is_ok());
+        assert!(valid_args.body(Endpoint::Autocomplete, None).is_ok());
     }
 
     #[test]
@@ -673,10 +678,10 @@ mod tests {
     #[test]
     fn a_search_asks_serper_to_resolve_links_only_when_told() {
         let quiet = parse_search_args(serde_json::json!({"q": "apple"}));
-        let body = quiet.body(Endpoint::Search).expect("body");
+        let body = quiet.body(Endpoint::Search, None).expect("body");
         assert!(body.get("resolveLinks").is_none());
         let told = parse_search_args(serde_json::json!({"q": "apple", "resolve_links": false}));
-        let body = told.body(Endpoint::Search).expect("body");
+        let body = told.body(Endpoint::Search, None).expect("body");
         assert_eq!(
             body.get("resolveLinks").and_then(Value::as_bool),
             Some(false)
@@ -742,12 +747,12 @@ mod tests {
         let empty: BatchArgs =
             serde_json::from_value(serde_json::json!({"kind": "search", "queries": []}))
                 .expect("parse");
-        assert!(empty.bodies().is_err());
+        assert!(empty.bodies(None).is_err());
         let one: BatchArgs = serde_json::from_value(
             serde_json::json!({"kind": "search", "queries": [{"q": "a"}, {"q": "b"}]}),
         )
         .expect("parse");
-        assert_eq!(one.bodies().expect("bodies").len(), 2);
+        assert_eq!(one.bodies(None).expect("bodies").len(), 2);
     }
 
     #[test]
@@ -770,7 +775,7 @@ mod tests {
     fn hl_accepts_three_letter_bases_and_regions() {
         for code in ["zh-cn", "zh-tw", "pt-br", "es-419", "fil", "EN-gb"] {
             let args = parse_search_args(serde_json::json!({"q": "x", "hl": code}));
-            let body = args.body(Endpoint::Search).expect("body");
+            let body = args.body(Endpoint::Search, None).expect("body");
             let expected = code.to_ascii_lowercase();
             assert_eq!(
                 body.get("hl").and_then(Value::as_str),
@@ -783,7 +788,7 @@ mod tests {
     #[test]
     fn gl_still_takes_only_two_letters() {
         let args = parse_search_args(serde_json::json!({"q": "x", "gl": "zh-cn"}));
-        assert!(args.body(Endpoint::Search).is_err());
+        assert!(args.body(Endpoint::Search, None).is_err());
     }
 
     #[test]
@@ -791,7 +796,7 @@ mod tests {
         for code in ["en-", "en-usa-extra", "e", "123", "en_US", "fil-"] {
             let args = parse_search_args(serde_json::json!({"q": "x", "hl": code}));
             assert!(
-                args.body(Endpoint::Search).is_err(),
+                args.body(Endpoint::Search, None).is_err(),
                 "hl {code} was accepted"
             );
         }
@@ -810,12 +815,45 @@ mod tests {
     }
 
     #[test]
+    fn a_web_search_takes_the_configured_freshness_window() {
+        let args = parse_search_args(serde_json::json!({"q": "apple"}));
+        let body = args
+            .body(Endpoint::Search, Some(TimeFilter::Year))
+            .expect("body");
+        assert_eq!(body.get("tbs").and_then(Value::as_str), Some("qdr:y"));
+        let images = args
+            .body(Endpoint::Images, Some(TimeFilter::Year))
+            .expect("images body");
+        assert!(images.get("tbs").is_none());
+        let off = args.body(Endpoint::Search, None).expect("body");
+        assert!(off.get("tbs").is_none());
+    }
+
+    #[test]
+    fn a_caller_time_filter_beats_the_configured_one() {
+        let asked = parse_search_args(serde_json::json!({"q": "apple", "tbs": "qdr:d"}));
+        let body = asked
+            .body(Endpoint::Search, Some(TimeFilter::Year))
+            .expect("body");
+        assert_eq!(body.get("tbs").and_then(Value::as_str), Some("qdr:d"));
+    }
+
+    #[test]
+    fn the_all_filter_asks_google_for_every_year() {
+        let any_time = parse_search_args(serde_json::json!({"q": "apple", "tbs": "all"}));
+        let body = any_time
+            .body(Endpoint::Search, Some(TimeFilter::Year))
+            .expect("body");
+        assert!(body.get("tbs").is_none());
+    }
+
+    #[test]
     fn batch_queries_still_build_their_body() {
         let args: BatchArgs = serde_json::from_value(
             serde_json::json!({"kind": "search", "queries": [{"q": "a", "num": 5}]}),
         )
         .expect("parse");
-        let bodies = args.bodies().expect("bodies");
+        let bodies = args.bodies(None).expect("bodies");
         let num = bodies
             .first()
             .and_then(|body| body.get("num"))
