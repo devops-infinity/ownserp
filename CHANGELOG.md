@@ -6,6 +6,8 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-30
+
 ### Added
 
 - `default_freshness` in the profile and `OWN_SERPER_DEFAULT_FRESHNESS` in the environment set the window a web search asks for, and `tbs: all` searches every year.
@@ -347,3 +349,5 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 [2.1.0]: https://github.com/devops-infinity/ownserp/compare/v2.0.0...v2.1.0
 
 [2.2.0]: https://github.com/devops-infinity/ownserp/compare/v2.1.0...v2.2.0
+
+[2.3.0]: https://github.com/devops-infinity/ownserp/compare/v2.2.0...v2.3.0
