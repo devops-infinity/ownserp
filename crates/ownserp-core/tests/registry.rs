@@ -16,7 +16,7 @@ use serde_json::Value;
 fn catalog_tools_have_prefixed_unique_names_and_complete_schemas() {
     let handler = OwnserpHandler::new(common::settings("catalog")).expect("handler");
     let tools = handler.tools();
-    assert_eq!(tools.len(), 16, "batch stays disabled by default");
+    assert_eq!(tools.len(), 17, "batch stays disabled by default");
     let mut names = BTreeSet::new();
     let mut descriptions = BTreeSet::new();
     for tool in tools {
@@ -68,7 +68,7 @@ fn catalog_tools_have_prefixed_unique_names_and_complete_schemas() {
         let annotations = tool.annotations.as_ref().expect("annotations");
         let free = matches!(
             tool.name.as_ref(),
-            "serper_locations" | "serper_session" | "serper_health"
+            "serper_locations" | "serper_session" | "serper_health" | "serper_resolve"
         );
         assert_eq!(
             annotations.read_only_hint,
@@ -118,8 +118,8 @@ fn catalog_fits_the_measured_budget() {
     let handler = OwnserpHandler::new(common::settings("budget")).expect("handler");
     let bytes = serde_json::to_vec(handler.tools()).expect("serialize catalog");
     assert!(
-        bytes.len() < 40_000,
-        "default tools list is {} bytes, above the 40 KB budget",
+        bytes.len() < 48_000,
+        "default tools list is {} bytes, above the 48 KB budget",
         bytes.len()
     );
 }

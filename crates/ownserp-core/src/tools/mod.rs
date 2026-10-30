@@ -15,12 +15,12 @@ use crate::config::Settings;
 use crate::error::{Error, Result};
 use crate::response::{
     BatchOutput, Envelope, HealthOutput, ImageItem, LensItem, ListOutput, LocationItem, NewsItem,
-    OrganicItem, PatentItem, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput,
-    ShoppingItem, Suggestion, VideoItem,
+    OrganicItem, PatentItem, PlaceItem, ResolveOutput, ReviewItem, ScholarItem, ScrapeOutput,
+    SessionOutput, ShoppingItem, Suggestion, VideoItem,
 };
 use crate::tools::args::{
-    BatchArgs, HealthArgs, LensArgs, LocationsArgs, ReviewsArgs, ScrapeArgs, SearchArgs,
-    SessionArgs,
+    BatchArgs, HealthArgs, LensArgs, LocationsArgs, ResolveArgs, ReviewsArgs, ScrapeArgs,
+    SearchArgs, SessionArgs,
 };
 use crate::tools::specs::ToolSpec;
 
@@ -47,6 +47,7 @@ fn build_tool(spec: &'static ToolSpec) -> Result<Tool> {
         "serper_lens" => input_schema::<LensArgs>()?,
         "serper_scrape" => input_schema::<ScrapeArgs>()?,
         "serper_locations" => input_schema::<LocationsArgs>()?,
+        "serper_resolve" => input_schema::<ResolveArgs>()?,
         "serper_search_batch" => input_schema::<BatchArgs>()?,
         "serper_health" => input_schema::<HealthArgs>()?,
         "serper_session" => input_schema::<SessionArgs>()?,
@@ -79,6 +80,7 @@ fn build_tool(spec: &'static ToolSpec) -> Result<Tool> {
         "serper_reviews" => attach_output_schema::<ListOutput<ReviewItem>>(tool),
         "serper_lens" => attach_output_schema::<ListOutput<LensItem>>(tool),
         "serper_locations" => attach_output_schema::<ListOutput<LocationItem>>(tool),
+        "serper_resolve" => attach_output_schema::<ResolveOutput>(tool),
         "serper_scrape" => attach_output_schema::<ScrapeOutput>(tool),
         "serper_search_batch" => attach_output_schema::<BatchOutput>(tool),
         "serper_session" => attach_output_schema::<SessionOutput>(tool),

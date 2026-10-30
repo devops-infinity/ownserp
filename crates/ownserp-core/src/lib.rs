@@ -40,8 +40,8 @@ pub use projection::{
 pub use response::{
     AnswerBox, BatchEntry, BatchOutput, CostInfo, Envelope, HealthOutput, ImageItem,
     KnowledgeGraph, LedgerHealth, LensItem, ListOutput, LocationItem, NewsItem, OrganicItem,
-    PatentItem, PeopleAlsoAsk, PlaceItem, ReviewItem, ScholarItem, ScrapeOutput, SessionOutput,
-    ShoppingItem, Suggestion, ToolUsage, VideoItem,
+    PatentItem, PeopleAlsoAsk, PlaceItem, ResolveOutput, ResolvedLink, ReviewItem, ScholarItem,
+    ScrapeOutput, SessionOutput, ShoppingItem, Suggestion, ToolUsage, VideoItem,
 };
 pub use secrecy::SecretString;
 pub use server::{Metrics, OwnserpHandler, serve_http, serve_stdio};

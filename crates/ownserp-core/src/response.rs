@@ -25,6 +25,8 @@ pub struct OrganicItem {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub link: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub displayed_link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub position: Option<u32>,
@@ -36,6 +38,26 @@ pub struct OrganicItem {
     pub attributes: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub truncated: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolvedLink {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ResolveOutput {
+    pub results: Vec<ResolvedLink>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retry_after: Option<u64>,
+    pub cost: CostInfo,
+    #[serde(default)]
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

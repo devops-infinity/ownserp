@@ -8,6 +8,8 @@ use crate::error::{Error, Result};
 use crate::types::{MapViewport, Preset, TextMode, TimeFilter};
 
 pub(crate) const MAX_BATCH_QUERIES: usize = 100;
+pub(crate) const MAX_RESOLVE_LINKS: usize = 100;
+pub(crate) const DEFAULT_RESULT_COUNT: u8 = 10;
 
 #[derive(Debug, Clone, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +27,8 @@ pub struct SearchArgs {
     pub tbs: Option<TimeFilter>,
     #[serde(default)]
     pub autocorrect: Option<bool>,
+    #[serde(default)]
+    pub resolve_links: Option<bool>,
     #[serde(default)]
     pub location: Option<String>,
     #[serde(default)]
@@ -53,7 +57,7 @@ impl SearchArgs {
         if let Some(hl) = &self.hl {
             body.insert("hl".to_owned(), Value::String(validate_language(hl, "hl")?));
         }
-        if let Some(num) = self.num {
+        if let Some(num) = self.num.or(default_result_count(endpoint)) {
             if !(1..=100).contains(&num) {
                 return Err(Error::InvalidArgs(format!("num {num} is outside 1..100")));
             }
@@ -71,6 +75,9 @@ impl SearchArgs {
         if let Some(autocorrect) = self.autocorrect {
             body.insert("autocorrect".to_owned(), Value::Bool(autocorrect));
         }
+        if let Some(resolve_links) = self.resolve_links {
+            body.insert("resolveLinks".to_owned(), Value::Bool(resolve_links));
+        }
         if let Some(location) = &self.location {
             let location = crate::types::LocationQuery::try_from(location.clone())?;
             body.insert("location".to_owned(), Value::String(location.into()));
@@ -81,6 +88,10 @@ impl SearchArgs {
         reject_unsupported(endpoint, &body)?;
         Ok(Value::Object(body))
     }
+}
+
+fn default_result_count(endpoint: Endpoint) -> Option<u8> {
+    (endpoint == Endpoint::Search).then_some(DEFAULT_RESULT_COUNT)
 }
 
 fn reject_unsupported(endpoint: Endpoint, body: &Map<String, Value>) -> Result<()> {
@@ -398,6 +409,32 @@ impl LocationsArgs {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct ResolveArgs {
+    pub links: Vec<String>,
+}
+
+impl ResolveArgs {
+    pub fn body(&self) -> Result<Value> {
+        if self.links.is_empty() {
+            return Err(Error::InvalidArgs("links is empty".into()));
+        }
+        if self.links.len() > MAX_RESOLVE_LINKS {
+            return Err(Error::InvalidArgs(format!(
+                "links holds {} items, above the {MAX_RESOLVE_LINKS} limit",
+                self.links.len()
+            )));
+        }
+        let organic = self
+            .links
+            .iter()
+            .map(|link| Ok(json!({ "link": valid_url(link)? })))
+            .collect::<Result<Vec<_>>>()?;
+        Ok(json!({ "organic": organic }))
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BatchKind {
@@ -458,6 +495,7 @@ impl BatchQueryArgs {
             page: self.page,
             tbs: self.tbs,
             autocorrect: self.autocorrect,
+            resolve_links: None,
             location: self.location.clone(),
             ll: self.ll.clone(),
             fields: None,
@@ -520,6 +558,35 @@ mod tests {
     }
 
     #[test]
+    fn a_web_search_asks_for_a_full_page_by_default() {
+        let args = parse_search_args(serde_json::json!({"q": "apple"}));
+        let search = args.body(Endpoint::Search).expect("search body");
+        assert_eq!(
+            search.get("num").and_then(Value::as_u64),
+            Some(u64::from(DEFAULT_RESULT_COUNT))
+        );
+        let asked = parse_search_args(serde_json::json!({"q": "apple", "num": 100}));
+        let search = asked.body(Endpoint::Search).expect("search body");
+        assert_eq!(search.get("num").and_then(Value::as_u64), Some(100));
+    }
+
+    #[test]
+    fn a_result_count_outside_web_search_is_sent_only_when_asked() {
+        let args = parse_search_args(serde_json::json!({"q": "apple"}));
+        for endpoint in [Endpoint::News, Endpoint::Images, Endpoint::Videos] {
+            let body = args.body(endpoint).expect("body");
+            assert!(
+                body.get("num").is_none(),
+                "{} sent a default",
+                endpoint.tool_name()
+            );
+        }
+        let asked = parse_search_args(serde_json::json!({"q": "apple", "num": 20}));
+        let news = asked.body(Endpoint::News).expect("news body");
+        assert_eq!(news.get("num").and_then(Value::as_u64), Some(20));
+    }
+
+    #[test]
     fn a_search_body_carries_only_what_was_set() {
         let args = parse_search_args(serde_json::json!({"q": "apple inc", "gl": "US", "num": 5}));
         let body = args.body(Endpoint::Search).expect("body");
@@ -567,6 +634,53 @@ mod tests {
             serde_json::from_value(serde_json::json!({"placeId": "abc"})).expect("parse");
         let body = one.body().expect("body");
         assert_eq!(body.get("placeId").and_then(Value::as_str), Some("abc"));
+    }
+
+    #[test]
+    fn a_resolve_body_wraps_each_link_in_an_organic_entry() {
+        let args: ResolveArgs = serde_json::from_value(serde_json::json!({
+            "links": ["https://www.google.com/goto?url=CAESabc", "https://example.org/a"]
+        }))
+        .expect("parse");
+        let body = args.body().expect("body");
+        let organic = body
+            .get("organic")
+            .and_then(Value::as_array)
+            .expect("organic");
+        assert_eq!(organic.len(), 2);
+        assert_eq!(
+            organic[1].get("link").and_then(Value::as_str),
+            Some("https://example.org/a")
+        );
+    }
+
+    #[test]
+    fn a_resolve_body_refuses_no_links_a_crowd_or_a_non_http_link() {
+        let empty: ResolveArgs =
+            serde_json::from_value(serde_json::json!({"links": []})).expect("parse");
+        assert!(empty.body().is_err());
+        let crowd: ResolveArgs = serde_json::from_value(serde_json::json!({
+            "links": vec!["https://example.org/a"; MAX_RESOLVE_LINKS + 1]
+        }))
+        .expect("parse");
+        assert!(crowd.body().is_err());
+        let bad: ResolveArgs =
+            serde_json::from_value(serde_json::json!({"links": ["ftp://example.org/a"]}))
+                .expect("parse");
+        assert!(bad.body().is_err());
+    }
+
+    #[test]
+    fn a_search_asks_serper_to_resolve_links_only_when_told() {
+        let quiet = parse_search_args(serde_json::json!({"q": "apple"}));
+        let body = quiet.body(Endpoint::Search).expect("body");
+        assert!(body.get("resolveLinks").is_none());
+        let told = parse_search_args(serde_json::json!({"q": "apple", "resolve_links": false}));
+        let body = told.body(Endpoint::Search).expect("body");
+        assert_eq!(
+            body.get("resolveLinks").and_then(Value::as_bool),
+            Some(false)
+        );
     }
 
     #[test]

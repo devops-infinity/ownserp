@@ -6,6 +6,17 @@ The minimum supported Rust version is 1.89. Raising it is recorded in this file 
 
 ## [Unreleased]
 
+### Added
+
+- `serper_resolve` turns the `google.com/goto` links a search returns into the real destination URLs at no cost, through Serper's `/resolve` endpoint. When Google has not released a link yet, the response carries `retryAfter` and the same links are sent again after that many seconds.
+- Web and image results report `displayedLink` beside each `link`, the readable form Google shows for a `google.com/goto` redirect.
+
+### Changed
+
+- A web search that leaves `num` out asks for 10 results, the size of one Google page, so the count no longer depends on Serper's own default.
+- Search tools take `resolve_links`, which sends `resolveLinks` to Serper and skips the top-three link resolution a search now does before answering.
+- The catalog budget in the registry test rises from 40 KB to 48 KB, because the tool list gained `serper_resolve`.
+
 ## [2.1.0] - 2026-10-30
 
 ### Added
