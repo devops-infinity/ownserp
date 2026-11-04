@@ -9,5 +9,11 @@ if [[ -n "$(git -C "$REPO" status --porcelain)" ]]; then
 	exit 1
 fi
 
+if [[ -x "$REPO/tools/reinstall.sh" ]]; then
+	log_line INFO "pruning stale build data from target/"
+	"$REPO/tools/reinstall.sh" --prune-only ||
+		log_line WARNING "the build cache prune did not finish; the gate still runs"
+fi
+
 log_line INFO "running the gate before push"
 exec "$REPO/tools/verify.sh"
